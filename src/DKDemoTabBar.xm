@@ -33,6 +33,9 @@ static void DKDemoUpdateFloatButton(UIWindow *window);
 
 static NSString *const kDKDemoEnabledKey = @"DKDemoGlassEnabled";
 static NSString *const kDKDemoPresetKey  = @"DKDemoGlassPreset";
+/// 1 = 胶囊挂到 window 上（默认）。DYYY「全屏显示」会把整个底栏藏掉或盖住，
+/// 胶囊作为底栏子视图会跟着消失；挂到 window 才能浮在视频上。
+static NSString *const kDKDemoOverlayKey = @"DKDemoGlassOverlay";
 
 static const long long kDKDemoPlusButtonType = 2;
 
@@ -158,8 +161,12 @@ static DKDemoGlassPreset DKDemoPreset(void) {
     return (DKDemoGlassPreset)[defaults integerForKey:kDKDemoPresetKey];
 }
 
-static NSString *DKDemoPresetName(DKDemoGlassPreset preset) {
-    switch (preset) {
+static BOOL DKDemoOverlayPreferred(void) {
+    id value = [NSUserDefaults.standardUserDefaults objectForKey:kDKDemoOverlayKey];
+    return value ? [value boolValue] : YES;
+}
+
+static NSString *DKDemoPresetName(DKDemoGlassPreset preset) {    switch (preset) {
         case DKDemoGlassPresetThin: return @"清透";
         case DKDemoGlassPresetChrome: return @"厚雾";
         case DKDemoGlassPresetFrosted:
@@ -424,6 +431,15 @@ static NSString *DKDemoBuildScanReport(void) {
         DKDemoUpdateFloatButton(DKDemoKeyWindow());
     }]];
 
+    BOOL overlay = DKDemoOverlayPreferred();
+    [alert addAction:[UIAlertAction actionWithTitle:(overlay ? @"浮层模式：开（改回挂底栏）"
+                                                            : @"浮层模式：关（改为挂窗口）")
+                                            style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        [NSUserDefaults.standardUserDefaults setBool:!overlay forKey:kDKDemoOverlayKey];
+        if (gBar) DKDemoSync(gBar);
+    }]];
+
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
 
     alert.popoverPresentationController.sourceView = gCapsule ?: presenter.view;
@@ -653,11 +669,34 @@ static void DKDemoRebuild(AWENormalModeTabBar *bar, NSArray *buttons, NSString *
     gSignature = [signature copy];
 }
 
-static void DKDemoLayout(AWENormalModeTabBar *bar) {
-    if (!gCapsule || !gPlusKey) return;
+/// 胶囊的宿主：默认挂 window。挂底栏会被 DYYY 全屏 / 抖音换页一起带走。
+static UIView *DKDemoHost(AWENormalModeTabBar *bar) {
+    UIWindow *window = bar.window;
+    if (DKDemoOverlayPreferred() && window) return window;
+    return bar;
+}
 
-    CGRect bounds = bar.bounds;
-    CGFloat bottomInset = bar.safeAreaInsets.bottom;
+static void DKDemoReparent(UIView *host) {
+    if (!gCapsule || !gPlusKey || !host) return;
+
+    if (gCapsule.superview != host) {
+        [gCapsule removeFromSuperview];
+        [host addSubview:gCapsule];
+    }
+    if (gPlusKey.superview != host) {
+        [gPlusKey removeFromSuperview];
+        [host addSubview:gPlusKey];
+    }
+    // 圆键永远压在胶囊之上。
+    [host bringSubviewToFront:gCapsule];
+    [host bringSubviewToFront:gPlusKey];
+}
+
+static void DKDemoLayoutInView(UIView *host) {
+    if (!gCapsule || !gPlusKey || !host) return;
+
+    CGRect bounds = host.bounds;
+    CGFloat bottomInset = host.safeAreaInsets.bottom;
 
     // 底栏的真实高度 = 内容区 + home indicator 安全区。iPhone 13 Pro Max 上典型是 49 + 34 = 83，
     // 胶囊只能活在内容区里，所以高度跟着内容区走（约 45pt），不硬写 62——硬写会顶出底栏被裁。
@@ -713,8 +752,7 @@ static void DKDemoTeardown(AWENormalModeTabBar *bar) {
     gSignature = nil;
 }
 
-static void DKDemoSync(AWENormalModeTabBar *bar) {
-    if (!bar || gSyncing) return;
+static void DKDemoSync(AWENormalModeTabBar *bar) {    if (!bar || gSyncing) return;
 
     gSyncing = YES;
     @try {
@@ -732,7 +770,10 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {
         }
 
         DKDemoHideNative(bar);
-        DKDemoLayout(bar);
+
+        UIView *host = DKDemoHost(bar);
+        DKDemoReparent(host);
+        DKDemoLayoutInView(host);
         DKDemoRefreshSelection();
 
         UIUserInterfaceStyle style = DKDemoStyle(bar);
@@ -742,10 +783,13 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {
 
         CGRect barBounds = bar.bounds;
         NSUInteger mirrored = gItems.count > 0 ? gItems.count - 1 : 0;
-        gDiagnostics = [NSString stringWithFormat:@"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu",
+        gDiagnostics = [NSString stringWithFormat:
+                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d",
                         NSStringFromClass(bar.class), barBounds.size.width, barBounds.size.height,
                         bar.safeAreaInsets.bottom,
-                        (unsigned long)mirrored, (unsigned long)buttons.count];
+                        (unsigned long)mirrored, (unsigned long)buttons.count,
+                        host == bar ? @"底栏" : NSStringFromClass(host.class),
+                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0];
 
         // 几何只在第一次同步时打一行：底栏高度决定胶囊能有多高，这是移植时最先要确认的数。
         static BOOL loggedGeometry = NO;
@@ -756,6 +800,15 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {
     } @finally {
         gSyncing = NO;
     }
+}
+
+/// 定时兜底：window 尺寸变化、宿主被换掉、胶囊被别的视图挤下去时，把它摆回来。
+static void DKDemoUpdateOverlay(void) {
+    if (!gBar || !gCapsule || !gPlusKey || gSyncing) return;
+    UIView *host = DKDemoHost(gBar);
+    if (!host) return;
+    DKDemoReparent(host);
+    DKDemoLayoutInView(host);
 }
 
 #pragma mark - 钩子
@@ -789,5 +842,6 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {
     // 浮标兜底：底栏钩子没命中时（类名变了 / 页面还没建），这个是唯一能看到诊断的入口。
     [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(__unused NSTimer *timer) {
         DKDemoUpdateFloatButton(DKDemoKeyWindow());
+        DKDemoUpdateOverlay();
     }];
 }
