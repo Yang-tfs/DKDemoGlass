@@ -17,6 +17,7 @@
 
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 
 #import "DKDemoGlassCapsule.h"
@@ -28,14 +29,12 @@
 // 前置声明：菜单与对比逻辑要用到它，而它定义在文件后半段。
 static void DKDemoSync(AWENormalModeTabBar *bar);
 static void DKDemoUpdateFloatButton(UIWindow *window);
+static UIWindow *DKDemoKeyWindow(void);
 
 #pragma mark - 常量
 
 static NSString *const kDKDemoEnabledKey = @"DKDemoGlassEnabled";
 static NSString *const kDKDemoPresetKey  = @"DKDemoGlassPreset";
-/// 1 = 胶囊挂到 window 上（默认）。DYYY「全屏显示」会把整个底栏藏掉或盖住，
-/// 胶囊作为底栏子视图会跟着消失；挂到 window 才能浮在视频上。
-static NSString *const kDKDemoOverlayKey = @"DKDemoGlassOverlay";
 
 static const long long kDKDemoPlusButtonType = 2;
 
@@ -62,6 +61,10 @@ static NSString *gScanReport;
 static BOOL gSyncing;
 static UIButton *gFloatButton;
 static BOOL gFloatButtonHidden;
+/// 宿主：YES = 挂 window（默认），NO = 挂底栏。
+/// 只在本次运行内有效，不落盘——上一版把它存进 NSUserDefaults，误触一次就再也回不来，
+/// 重启 App 恢复窗口模式比让用户去菜单里找回来靠谱。
+static BOOL gHostWindow = YES;
 
 #pragma mark - 内容项
 
@@ -162,8 +165,7 @@ static DKDemoGlassPreset DKDemoPreset(void) {
 }
 
 static BOOL DKDemoOverlayPreferred(void) {
-    id value = [NSUserDefaults.standardUserDefaults objectForKey:kDKDemoOverlayKey];
-    return value ? [value boolValue] : YES;
+    return gHostWindow;
 }
 
 static NSString *DKDemoPresetName(DKDemoGlassPreset preset) {    switch (preset) {
@@ -258,8 +260,7 @@ static NSArray *DKDemoNativeButtons(AWENormalModeTabBar *bar) {
     return candidates;
 }
 
-static NSString *DKDemoSignature(NSArray *buttons) {
-    NSMutableString *signature = [NSMutableString string];
+static NSString *DKDemoSignature(NSArray *buttons) {    NSMutableString *signature = [NSMutableString string];
     for (id button in buttons) {
         long long type = -1;
         DKDemoButtonType(button, &type);
@@ -267,6 +268,61 @@ static NSString *DKDemoSignature(NSArray *buttons) {
             NSStringFromClass([button class]), DKDemoButtonTitle(button) ?: @"", type];
     }
     return signature;
+}
+
+#pragma mark - 切页转发
+
+// 抖音的切页不走 UIControl 的 target-action——实测 sendActionsForControlEvents: 是空转，
+// 底栏看着有反馈，页面不换。DYKiller 在 iOS 26 上验证过的做法是直接调底栏控制器的私有回调，
+// 连手势对象一起回传，40.7.0 的二进制里是同一套方法，这里照抄。
+static NSString *const kDKDemoTabSelectSelector = @"tabBarButtonDidTouchUpInside:gestureRecognizer:";
+static NSString *const kDKDemoPlusClickSelector = @"plusTabBarButtonDidClick:";
+
+static UITabBarController *DKDemoControllerForView(UIView *view) {
+    for (UIResponder *responder = view.nextResponder; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UITabBarController.class]) return (UITabBarController *)responder;
+    }
+    return nil;
+}
+
+static UITabBarController *DKDemoFindTabBarController(UIViewController *root) {
+    if (!root) return nil;
+    if ([root isKindOfClass:UITabBarController.class]) return (UITabBarController *)root;
+    for (UIViewController *child in root.childViewControllers) {
+        UITabBarController *found = DKDemoFindTabBarController(child);
+        if (found) return found;
+    }
+    if (root.presentedViewController) return DKDemoFindTabBarController(root.presentedViewController);
+    return nil;
+}
+
+static UITabBarController *DKDemoTabBarControllerFor(id native) {
+    UITabBarController *controller = nil;
+    if ([native isKindOfClass:UIView.class]) controller = DKDemoControllerForView((UIView *)native);
+    if (!controller) controller = DKDemoFindTabBarController(DKDemoKeyWindow().rootViewController);
+    return controller;
+}
+
+/// 返回 YES 表示已经走抖音自己的回调。
+static BOOL DKDemoForwardSelect(id native) {
+    if (![native isKindOfClass:UIView.class]) return NO;
+
+    UITabBarController *controller = DKDemoTabBarControllerFor(native);
+    SEL selector = NSSelectorFromString(kDKDemoTabSelectSelector);
+    if (!controller || ![controller respondsToSelector:selector]) return NO;
+
+    id gesture = nil;
+    @try { gesture = [native valueForKey:@"singleTapGes"]; } @catch (__unused NSException *exception) {}
+    ((void (*)(id, SEL, id, id))objc_msgSend)(controller, selector, native, gesture);
+    return YES;
+}
+
+static BOOL DKDemoForwardPlus(id native) {
+    UITabBarController *controller = DKDemoTabBarControllerFor(native);
+    SEL selector = NSSelectorFromString(kDKDemoPlusClickSelector);
+    if (!controller || ![controller respondsToSelector:selector]) return NO;
+    ((void (*)(id, SEL, id))objc_msgSend)(controller, selector, native);
+    return YES;
 }
 
 #pragma mark - 原生视图遮蔽
@@ -364,25 +420,43 @@ static NSString *DKDemoBuildScanReport(void) {
     NSInteger index = item.tag;
     if (index < 0 || index >= (NSInteger)gNativeButtons.count) {
         NSLog(@"[DKDemoGlass] 占位项被点击，无原生按钮可转发（index=%ld）", (long)index);
+        [self showToast:@"占位项：没读到原生按钮"];
         return;
     }
+
     id native = gNativeButtons[(NSUInteger)index];
+    if (DKDemoForwardSelect(native)) {
+        NSLog(@"[DKDemoGlass] 已切页 -> %@", NSStringFromClass([native class]));
+        return;
+    }
+
     if ([native isKindOfClass:UIControl.class]) {
         [(UIControl *)native sendActionsForControlEvents:UIControlEventTouchUpInside];
-        NSLog(@"[DKDemoGlass] 已转发点击 -> %@", NSStringFromClass([native class]));
-    } else {
-        NSLog(@"[DKDemoGlass] 原生项不是 UIControl：%@", NSStringFromClass([native class]));
+        NSLog(@"[DKDemoGlass] 切页回退 sendActions -> %@", NSStringFromClass([native class]));
+        [self showToast:@"切页走了回退路径，可能无效"];
+        return;
     }
+
+    NSLog(@"[DKDemoGlass] 无法转发：%@", NSStringFromClass([native class]));
+    [self showToast:@"切页失败：找不到可用回调"];
 }
 
 - (void)handlePlusTap {
     UIControl *native = gPlusNativeButton;
     if (!native) {
         NSLog(@"[DKDemoGlass] 没有找到拍摄按钮，圆键为占位");
+        [self showToast:@"拍摄键：没读到原生按钮"];
         return;
     }
+
+    if (DKDemoForwardPlus(native)) {
+        NSLog(@"[DKDemoGlass] 已调用拍摄回调 -> %@", NSStringFromClass([native class]));
+        return;
+    }
+
     [native sendActionsForControlEvents:UIControlEventTouchUpInside];
-    NSLog(@"[DKDemoGlass] 已转发拍摄点击 -> %@", NSStringFromClass([native class]));
+    NSLog(@"[DKDemoGlass] 拍摄回退 sendActions -> %@", NSStringFromClass([native class]));
+    [self showToast:@"拍摄走了回退路径，可能无效"];
 }
 
 - (void)handleLongPress:(UILongPressGestureRecognizer *)gesture {
@@ -404,6 +478,17 @@ static NSString *DKDemoBuildScanReport(void) {
                                                            preferredStyle:UIAlertControllerStyleActionSheet];
 
     __weak typeof(self) weakSelf = self;
+
+    // 宿主放第一条：这是唯一能决定"看不看得见"的开关，别让它排在滚动区外面。
+    [alert addAction:[UIAlertAction actionWithTitle:(gHostWindow ? @"宿主：窗口（点此改为底栏）"
+                                                                : @"宿主：底栏（点此改为窗口）")
+                                            style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        gHostWindow = !gHostWindow;
+        if (gBar) DKDemoSync(gBar);
+        [weakSelf showToast:(gHostWindow ? @"宿主：窗口" : @"宿主：底栏")];
+    }]];
+
     [alert addAction:[UIAlertAction actionWithTitle:@"切换材质" style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
         NSInteger next = (DKDemoPreset() + 1) % 3;
@@ -429,15 +514,6 @@ static NSString *DKDemoBuildScanReport(void) {
                                             handler:^(__unused UIAlertAction *action) {
         gFloatButtonHidden = !gFloatButtonHidden;
         DKDemoUpdateFloatButton(DKDemoKeyWindow());
-    }]];
-
-    BOOL overlay = DKDemoOverlayPreferred();
-    [alert addAction:[UIAlertAction actionWithTitle:(overlay ? @"浮层模式：开（改回挂底栏）"
-                                                            : @"浮层模式：关（改为挂窗口）")
-                                            style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        [NSUserDefaults.standardUserDefaults setBool:!overlay forKey:kDKDemoOverlayKey];
-        if (gBar) DKDemoSync(gBar);
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -669,11 +745,13 @@ static void DKDemoRebuild(AWENormalModeTabBar *bar, NSArray *buttons, NSString *
     gSignature = [signature copy];
 }
 
-/// 胶囊的宿主：默认挂 window。挂底栏会被 DYYY 全屏 / 抖音换页一起带走。
+/// 胶囊的宿主：默认挂 key window。挂底栏会被 DYYY 全屏 / 抖音换页一起带走。
 static UIView *DKDemoHost(AWENormalModeTabBar *bar) {
-    UIWindow *window = bar.window;
-    if (DKDemoOverlayPreferred() && window) return window;
-    return bar;
+    if (!DKDemoOverlayPreferred()) return bar;
+    // 优先 key window：那是浮标所在的窗口，已经证明它能盖在视频上面。
+    UIWindow *window = DKDemoKeyWindow();
+    if (!window) window = bar.window;
+    return window ?: bar;
 }
 
 static void DKDemoReparent(UIView *host) {
@@ -687,9 +765,13 @@ static void DKDemoReparent(UIView *host) {
         [gPlusKey removeFromSuperview];
         [host addSubview:gPlusKey];
     }
-    // 圆键永远压在胶囊之上。
-    [host bringSubviewToFront:gCapsule];
-    [host bringSubviewToFront:gPlusKey];
+
+    // 圆键永远压在胶囊之上；但弹窗（我们的菜单）在的时候别抢，否则会盖住菜单。
+    UIViewController *presented = host.window.rootViewController.presentedViewController;
+    if (!presented) {
+        [host bringSubviewToFront:gCapsule];
+        [host bringSubviewToFront:gPlusKey];
+    }
 }
 
 static void DKDemoLayoutInView(UIView *host) {
