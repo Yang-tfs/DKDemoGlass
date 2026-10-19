@@ -15,9 +15,13 @@ jobs:
           set -e
           brew install ldid xz dpkg || true
           export THEOS="$RUNNER_TEMP/theos"
+          rm -rf "$THEOS"
           git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          # theos 仓库自带一个空的 sdks 目录，必须先清掉才能 clone 真正的 SDK 仓库
+          rm -rf "$THEOS/sdks"
           git clone --depth 1 https://github.com/theos/sdks.git "$THEOS/sdks"
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/bin" >> "$GITHUB_PATH"
 
       - name: Build dylib
         run: make dylib
