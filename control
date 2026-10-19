@@ -1,0 +1,10 @@
+Package: com.hierarch.dkdemo
+Name: DKDemoGlass
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: 抖音磨砂胶囊底栏最小验证（iOS 16 自绘材质，不含 iOS 26 API）
+Section: Tweaks
+Depends: firmware (>= 15.0), mobilesubstrate
+Maintainer: hierarch
+Author: hierarch
+Priority: optional

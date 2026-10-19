@@ -1,0 +1,41 @@
+name: build DKDemoGlass
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Theos
+        run: |
+          set -e
+          brew install ldid xz dpkg || true
+          export THEOS="$RUNNER_TEMP/theos"
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          git clone --depth 1 https://github.com/theos/sdks.git "$THEOS/sdks"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
+      - name: Build dylib
+        run: make dylib
+
+      - name: Verify dylib
+        run: |
+          set -e
+          file packages/DKDemoGlass.dylib
+          echo "--- install name ---"
+          otool -D packages/DKDemoGlass.dylib
+          echo "--- linked libs ---"
+          otool -L packages/DKDemoGlass.dylib
+          if otool -L packages/DKDemoGlass.dylib | grep -qi substrate; then
+            echo "::warning::dylib 链接了 substrate，TrollFools 环境下会加载失败"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DKDemoGlass-dylib
+          path: packages/DKDemoGlass.dylib
+          if-no-files-found: error
