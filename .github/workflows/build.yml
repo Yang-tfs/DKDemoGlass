@@ -1,4 +1,4 @@
-name: build DKDemoGlass
+﻿name: build DKDemoGlass
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -17,7 +17,7 @@ jobs:
           export THEOS="$RUNNER_TEMP/theos"
           rm -rf "$THEOS"
           git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
-          # theos 仓库自带一个空的 sdks 目录，必须先清掉才能 clone 真正的 SDK 仓库
+          # theos 浠撳簱鑷甫涓€涓┖鐨?sdks 鐩綍锛屽繀椤诲厛娓呮帀鎵嶈兘 clone 鐪熸鐨?SDK 浠撳簱
           rm -rf "$THEOS/sdks"
           git clone --depth 1 https://github.com/theos/sdks.git "$THEOS/sdks"
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
@@ -35,7 +35,7 @@ jobs:
           echo "--- linked libs ---"
           otool -L packages/DKDemoGlass.dylib
           if otool -L packages/DKDemoGlass.dylib | grep -qi substrate; then
-            echo "::warning::dylib 链接了 substrate，TrollFools 环境下会加载失败"
+            echo "::warning::dylib 閾炬帴浜?substrate锛孴rollFools 鐜涓嬩細鍔犺浇澶辫触"
           fi
 
       - uses: actions/upload-artifact@v4
