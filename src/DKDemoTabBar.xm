@@ -36,7 +36,7 @@ static UIWindow *DKDemoKeyWindow(void);
 static NSString *const kDKDemoEnabledKey = @"DKDemoGlassEnabled";
 static NSString *const kDKDemoPresetKey  = @"DKDemoGlassPreset";
 /// 窗口宿主时，底栏从屏幕底部抬起的距离（pt）。0 = 贴底，会压住抖音的视频进度条。
-static NSString *const kDKDemoLiftKey    = @"DKDemoGlassLift";
+static NSString *const kDKDemoGapKey     = @"DKDemoGlassGap";   // 底栏底边距屏幕底的距离（pt）
 
 static const long long kDKDemoPlusButtonType = 2;
 
@@ -60,11 +60,10 @@ static __weak UIControl *gPlusNativeButton;
 static NSString *gSignature;
 static NSString *gDiagnostics;
 static NSString *gScanReport;
-static CGFloat gProgressTop;   // 本次布局探测到的进度条顶部 Y；0 = 没找到
-static NSString *gBottomCandidates = nil;   // 底部"宽而薄"的候选视图类名，探测失败时用
 static BOOL gSyncing;
 static UIButton *gFloatButton;
 static BOOL gFloatButtonHidden;
+static CGFloat gPanBaseGap = 34.0;   // 拖动开始时的距底值
 /// 宿主：YES = 挂 window（默认），NO = 挂底栏。
 /// 只在本次运行内有效，不落盘——上一版把它存进 NSUserDefaults，误触一次就再也回不来，
 /// 重启 App 恢复窗口模式比让用户去菜单里找回来靠谱。
@@ -189,10 +188,19 @@ static DKDemoGlassPreset DKDemoPreset(void) {
     return (DKDemoGlassPreset)[defaults integerForKey:kDKDemoPresetKey];
 }
 
-/// 窗口宿主时的抬升量。默认 0（贴底）；菜单里可切到 16/32 给视频进度条让位。
-static CGFloat DKDemoLift(void) {
-    id value = [NSUserDefaults.standardUserDefaults objectForKey:kDKDemoLiftKey];
-    return value ? [value doubleValue] : 0.0;
+/// 底栏底边距屏幕底的距离。默认 34（= 安全区），用户可以直接上下拖动底栏改它。
+static CGFloat gGap = -1.0;
+
+static CGFloat DKDemoGap(void) {
+    if (gGap >= 0.0) return gGap;
+    id value = [NSUserDefaults.standardUserDefaults objectForKey:kDKDemoGapKey];
+    gGap = value ? [value doubleValue] : 34.0;
+    return gGap;
+}
+
+static void DKDemoSetGap(CGFloat gap) {
+    gGap = MAX(0.0, MIN(gap, 200.0));
+    [NSUserDefaults.standardUserDefaults setDouble:gGap forKey:kDKDemoGapKey];
 }
 
 static BOOL DKDemoOverlayPreferred(void) {
@@ -439,6 +447,7 @@ static NSString *DKDemoBuildScanReport(void) {
 - (void)handleItemTap:(DKDemoItemView *)item;
 - (void)handlePlusTap;
 - (void)handleLongPress:(UILongPressGestureRecognizer *)gesture;
+- (void)handlePan:(UIPanGestureRecognizer *)gesture;
 - (void)showMenu;
 - (void)hideForComparison;
 - (void)showToast:(NSString *)text;
@@ -494,6 +503,24 @@ static NSString *DKDemoBuildScanReport(void) {
     [self showMenu];
 }
 
+/// 上下拖动底栏改位置：向上拖 = 距底变大（往上走），松手后位置落盘。
+- (void)handlePan:(UIPanGestureRecognizer *)gesture {
+    UIView *view = gesture.view;
+    if (!view) return;
+
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        gPanBaseGap = DKDemoGap();
+    } else if (gesture.state == UIGestureRecognizerStateChanged) {
+        CGPoint translation = [gesture translationInView:view.window ?: view];
+        DKDemoSetGap(gPanBaseGap - translation.y);
+        if (gBar) DKDemoSync(gBar);
+    } else if (gesture.state == UIGestureRecognizerStateEnded ||
+               gesture.state == UIGestureRecognizerStateCancelled) {
+        [gesture setTranslation:CGPointZero inView:view.window ?: view];
+        [self showToast:[NSString stringWithFormat:@"距底 %.0fpt", DKDemoGap()]];
+    }
+}
+
 - (void)showMenu {
     UIViewController *presenter = DKDemoTopViewController();
     if (!presenter) return;
@@ -519,15 +546,13 @@ static NSString *DKDemoBuildScanReport(void) {
         [weakSelf showToast:(gHostWindow ? @"宿主：窗口" : @"宿主：底栏")];
     }]];
 
-    // 抬升量：窗口宿主时胶囊会压住抖音的视频进度条，这里按 0/16/32 循环。
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"抬升：%.0fpt（点此切换）", DKDemoLift()]
+    // 位置：直接拖动底栏上下调；这里只提供复位。
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"位置：距底 %.0fpt（拖动底栏可调）", DKDemoGap()]
                                             style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
-        CGFloat lift = DKDemoLift();
-        CGFloat next = lift >= 32.0 ? 0.0 : lift + 16.0;
-        [NSUserDefaults.standardUserDefaults setDouble:next forKey:kDKDemoLiftKey];
+        DKDemoSetGap(34.0);
         if (gBar) DKDemoSync(gBar);
-        [weakSelf showToast:[NSString stringWithFormat:@"抬升：%.0fpt", next]];
+        [weakSelf showToast:@"位置已复位：34pt"];
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"切换材质" style:UIAlertActionStyleDefault
@@ -647,8 +672,8 @@ static void DKDemoUpdateFloatButton(UIWindow *window) {
     if (gFloatButton.superview != window) [window addSubview:gFloatButton];
 
     CGFloat side = 40.0;
-    // 贴着胶囊上沿再留一点空隙：胶囊会随"抬升"移动，所以按抬升量一起上移。
-    CGFloat bottomGap = 150.0 + DKDemoLift();
+    // 浮标固定在胶囊上方 50pt，跟着底栏一起移动。
+    CGFloat bottomGap = DKDemoGap() + 62.0 + 50.0;
     gFloatButton.frame = CGRectMake(window.bounds.size.width - side - 6.0,
                                     window.bounds.size.height - bottomGap, side, side);
 
@@ -795,6 +820,17 @@ static void DKDemoRebuild(AWENormalModeTabBar *bar, NSArray *buttons, NSString *
                                                       action:@selector(handleLongPress:)];
     [gPlusKey addGestureRecognizer:plusPress];
 
+    // 上下拖动调位置：UIPan 只在移动后才开始，不会抢走点击。
+    UIPanGestureRecognizer *capsulePan =
+        [[UIPanGestureRecognizer alloc] initWithTarget:DKDemoControlShared()
+                                                action:@selector(handlePan:)];
+    [gCapsule addGestureRecognizer:capsulePan];
+
+    UIPanGestureRecognizer *plusPan =
+        [[UIPanGestureRecognizer alloc] initWithTarget:DKDemoControlShared()
+                                                action:@selector(handlePan:)];
+    [gPlusKey addGestureRecognizer:plusPan];
+
     gSignature = [signature copy];
 }
 
@@ -827,45 +863,6 @@ static void DKDemoReparent(UIView *host) {
     }
 }
 
-/// 在窗口里找底部那条视频进度条：类名含 Progress、宽度过半屏、很薄、位于屏幕下半部。
-/// 找到返回它的顶部 Y（窗口坐标），找不到返回 0。
-/// 用显式栈迭代而不是递归 block——后者会被 ARC 判成自引用（-Warc-retain-cycles）。
-static CGFloat DKDemoBottomProgressTop(UIView *root) {
-    if (!root) return 0.0;
-    CGRect screen = root.bounds;
-    CGFloat best = 0.0;
-    NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
-    NSUInteger budget = 4000;
-
-    while (stack.count > 0 && budget-- > 0) {
-        UIView *view = stack.lastObject;
-        [stack removeLastObject];
-
-        NSString *name = NSStringFromClass(view.class);
-        if (!view.hidden && view.alpha > 0.05) {
-            CGRect frame = [view convertRect:view.bounds toView:root];
-            BOOL wide = frame.size.width > screen.size.width * 0.5;
-            BOOL thin = frame.size.height > 0.0 && frame.size.height < 40.0;
-            BOOL bottom = frame.origin.y > screen.size.height * 0.55;
-            if (wide && thin && bottom) {
-                if (candidates.count < 4) [candidates addObject:name];
-                if ([name containsString:@"Progress"] &&
-                    (best == 0.0 || frame.origin.y < best)) {
-                    best = frame.origin.y;
-                }
-            }
-        }
-
-        for (UIView *sub in view.subviews) [stack addObject:sub];
-    }
-
-    gBottomCandidates = candidates.count > 0
-        ? [candidates.array componentsJoinedByString:@","]
-        : @"(none)";
-    return best;
-}
-
 static void DKDemoLayoutInView(UIView *host) {
     if (!gCapsule || !gPlusKey || !host) return;
 
@@ -881,24 +878,12 @@ static void DKDemoLayoutInView(UIView *host) {
     if (height < 36.0 && available > 0.0) height = MIN(available, 36.0);
     if (height <= 0.0) height = available > 0.0 ? available : kDKDemoCapsuleHeight;
 
-    // 挂窗口时整体抬高，给屏幕最下方的视频进度条让位；挂底栏时不抬，否则会顶出底栏。
-    CGFloat lift = [host isKindOfClass:UIWindow.class] ? DKDemoLift() : 0.0;
-    CGFloat y = MAX(bounds.size.height - bottomInset - margin - height - lift, 0.0);
-
-    // 窗口宿主：把胶囊放到进度条【下方】并尽量贴屏幕底（会盖住 home indicator 那一带）。
-    // 进度条位置随页面/全屏变化，写死一定错位，所以运行时探测；放不下才退回它上方。
-    gProgressTop = 0.0;
+    // 位置由用户拖动决定（底边距屏幕底 = DKDemoGap）。挂底栏时贴着底栏内容区走。
+    CGFloat y;
     if ([host isKindOfClass:UIWindow.class]) {
-        gProgressTop = DKDemoBottomProgressTop(host);
-        if (gProgressTop > 0.0) {
-            CGFloat below = gProgressTop + 6.0;
-            CGFloat lowest = MAX(bounds.size.height - 4.0 - height, 0.0);
-            if (below + height <= bounds.size.height - 2.0) {
-                y = MAX(lowest, below);
-            } else {
-                y = MAX(gProgressTop - height - 6.0, 0.0);
-            }
-        }
+        y = MAX(bounds.size.height - DKDemoGap() - height, 0.0);
+    } else {
+        y = MAX(bounds.size.height - bottomInset - margin - height, 0.0);
     }
 
     CGFloat plusSide = MIN(kDKDemoPlusKeySide, height);
@@ -976,13 +961,12 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {    if (!bar || gSyncing) retu
         CGRect barBounds = bar.bounds;
         NSUInteger mirrored = gItems.count > 0 ? gItems.count - 1 : 0;
         gDiagnostics = [NSString stringWithFormat:
-                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d 进度条=%.0f\n底部候选=%@",
+                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d 距底=%.0f",
                         NSStringFromClass(bar.class), barBounds.size.width, barBounds.size.height,
                         bar.safeAreaInsets.bottom,
                         (unsigned long)mirrored, (unsigned long)buttons.count,
                         host == bar ? @"底栏" : NSStringFromClass(host.class),
-                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, gProgressTop,
-                        gBottomCandidates ?: @"(未扫描)"];
+                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, DKDemoGap()];
 
         // 几何只在第一次同步时打一行：底栏高度决定胶囊能有多高，这是移植时最先要确认的数。
         static BOOL loggedGeometry = NO;
