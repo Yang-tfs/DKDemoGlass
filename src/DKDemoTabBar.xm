@@ -187,10 +187,10 @@ static DKDemoGlassPreset DKDemoPreset(void) {
     return (DKDemoGlassPreset)[defaults integerForKey:kDKDemoPresetKey];
 }
 
-/// 窗口宿主时的抬升量。默认 16pt：刚好让出屏幕最下方那条视频进度条。
+/// 窗口宿主时的抬升量。默认 0（贴底）；菜单里可切到 16/32 给视频进度条让位。
 static CGFloat DKDemoLift(void) {
     id value = [NSUserDefaults.standardUserDefaults objectForKey:kDKDemoLiftKey];
-    return value ? [value doubleValue] : 16.0;
+    return value ? [value doubleValue] : 0.0;
 }
 
 static BOOL DKDemoOverlayPreferred(void) {
