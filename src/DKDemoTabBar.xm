@@ -36,7 +36,7 @@ static UIWindow *DKDemoKeyWindow(void);
 static NSString *const kDKDemoEnabledKey = @"DKDemoGlassEnabled";
 static NSString *const kDKDemoPresetKey  = @"DKDemoGlassPreset";
 /// 窗口宿主时，底栏从屏幕底部抬起的距离（pt）。0 = 贴底，会压住抖音的视频进度条。
-static NSString *const kDKDemoGapKey     = @"DKDemoGlassGap";   // 底栏底边距屏幕底的距离（pt）
+static NSString *const kDKDemoGapKey     = @"DKDemoGlassGap";   // 旧版单一位移键，仅用于迁移参考
 
 static const long long kDKDemoPlusButtonType = 2;
 
@@ -188,19 +188,56 @@ static DKDemoGlassPreset DKDemoPreset(void) {
     return (DKDemoGlassPreset)[defaults integerForKey:kDKDemoPresetKey];
 }
 
-/// 底栏底边距屏幕底的距离。默认 34（= 安全区），用户可以直接上下拖动底栏改它。
-static CGFloat gGap = -1.0;
+/// 底栏底边距屏幕底的距离，按内容类型分开记：
+/// 图文帖底部多一条输入/切换条，需要比普通视频再高一点（用户实测 20 vs 18）。
+static NSString *const kDKDemoGapVideoKey   = @"DKDemoGlassGapVideo";
+static NSString *const kDKDemoGapGalleryKey = @"DKDemoGlassGapGallery";
+
+/// 图文帖判定：屏幕上出现「图文」标记（作者名旁边那个小标签）。
+/// 比找进度条可靠——进度条会淡出，标签一直在。
+/// 结果缓存 0.5s：拖动时每帧都会调用，不能每次都遍历整棵视图树。
+static BOOL DKDemoScanGallery(void) {
+    UIWindow *window = DKDemoKeyWindow();
+    if (!window) return NO;
+
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
+    NSUInteger budget = 3000;
+    while (stack.count > 0 && budget-- > 0) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if ([view isKindOfClass:UILabel.class]) {
+            UILabel *label = (UILabel *)view;
+            if (!label.hidden && label.alpha > 0.05 && [label.text isEqualToString:@"图文"]) {
+                return YES;
+            }
+        }
+        for (UIView *sub in view.subviews) [stack addObject:sub];
+    }
+    return NO;
+}
+
+static BOOL DKDemoIsGalleryPage(void) {
+    static BOOL cached = NO;
+    static NSTimeInterval cachedAt = 0.0;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - cachedAt < 0.5) return cached;
+    cached = DKDemoScanGallery();
+    cachedAt = now;
+    return cached;
+}
 
 static CGFloat DKDemoGap(void) {
-    if (gGap >= 0.0) return gGap;
-    id value = [NSUserDefaults.standardUserDefaults objectForKey:kDKDemoGapKey];
-    gGap = value ? [value doubleValue] : 34.0;
-    return gGap;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    BOOL gallery = DKDemoIsGalleryPage();
+    NSString *key = gallery ? kDKDemoGapGalleryKey : kDKDemoGapVideoKey;
+    id value = [defaults objectForKey:key];
+    return value ? [value doubleValue] : (gallery ? 20.0 : 18.0);
 }
 
 static void DKDemoSetGap(CGFloat gap) {
-    gGap = MAX(0.0, MIN(gap, 200.0));
-    [NSUserDefaults.standardUserDefaults setDouble:gGap forKey:kDKDemoGapKey];
+    BOOL gallery = DKDemoIsGalleryPage();
+    NSString *key = gallery ? kDKDemoGapGalleryKey : kDKDemoGapVideoKey;
+    [NSUserDefaults.standardUserDefaults setDouble:MAX(0.0, MIN(gap, 200.0)) forKey:key];
 }
 
 static BOOL DKDemoOverlayPreferred(void) {
@@ -546,13 +583,16 @@ static NSString *DKDemoBuildScanReport(void) {
         [weakSelf showToast:(gHostWindow ? @"宿主：窗口" : @"宿主：底栏")];
     }]];
 
-    // 位置：直接拖动底栏上下调；这里只提供复位。
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"位置：距底 %.0fpt（拖动底栏可调）", DKDemoGap()]
+    // 位置：直接拖动底栏上下调；这里只提供复位（按当前内容类型复位）。
+    BOOL galleryNow = DKDemoIsGalleryPage();
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"位置：%@ 距底 %.0fpt（拖动可调）",
+                                                      galleryNow ? @"图文" : @"视频", DKDemoGap()]
                                             style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
-        DKDemoSetGap(34.0);
+        DKDemoSetGap(galleryNow ? 20.0 : 18.0);
         if (gBar) DKDemoSync(gBar);
-        [weakSelf showToast:@"位置已复位：34pt"];
+        [weakSelf showToast:[NSString stringWithFormat:@"%@ 位置复位：%.0fpt",
+                             galleryNow ? @"图文" : @"视频", galleryNow ? 20.0 : 18.0]];
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"切换材质" style:UIAlertActionStyleDefault
@@ -961,12 +1001,13 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {    if (!bar || gSyncing) retu
         CGRect barBounds = bar.bounds;
         NSUInteger mirrored = gItems.count > 0 ? gItems.count - 1 : 0;
         gDiagnostics = [NSString stringWithFormat:
-                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d 距底=%.0f",
+                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d 距底=%.0f\n内容=%@",
                         NSStringFromClass(bar.class), barBounds.size.width, barBounds.size.height,
                         bar.safeAreaInsets.bottom,
                         (unsigned long)mirrored, (unsigned long)buttons.count,
                         host == bar ? @"底栏" : NSStringFromClass(host.class),
-                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, DKDemoGap()];
+                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, DKDemoGap(),
+                        DKDemoIsGalleryPage() ? @"图文" : @"视频"];
 
         // 几何只在第一次同步时打一行：底栏高度决定胶囊能有多高，这是移植时最先要确认的数。
         static BOOL loggedGeometry = NO;
