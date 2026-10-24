@@ -61,6 +61,7 @@ static NSString *gSignature;
 static NSString *gDiagnostics;
 static NSString *gScanReport;
 static CGFloat gProgressTop;   // 本次布局探测到的进度条顶部 Y；0 = 没找到
+static NSString *gBottomCandidates = nil;   // 底部"宽而薄"的候选视图类名，探测失败时用
 static BOOL gSyncing;
 static UIButton *gFloatButton;
 static BOOL gFloatButtonHidden;
@@ -833,6 +834,7 @@ static CGFloat DKDemoBottomProgressTop(UIView *root) {
     if (!root) return 0.0;
     CGRect screen = root.bounds;
     CGFloat best = 0.0;
+    NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
     NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
     NSUInteger budget = 4000;
 
@@ -841,17 +843,26 @@ static CGFloat DKDemoBottomProgressTop(UIView *root) {
         [stack removeLastObject];
 
         NSString *name = NSStringFromClass(view.class);
-        if (!view.hidden && view.alpha > 0.05 && [name containsString:@"Progress"]) {
+        if (!view.hidden && view.alpha > 0.05) {
             CGRect frame = [view convertRect:view.bounds toView:root];
-            if (frame.size.width > screen.size.width * 0.5 &&
-                frame.size.height > 0.0 && frame.size.height < 40.0 &&
-                frame.origin.y > screen.size.height * 0.55) {
-                if (best == 0.0 || frame.origin.y < best) best = frame.origin.y;
+            BOOL wide = frame.size.width > screen.size.width * 0.5;
+            BOOL thin = frame.size.height > 0.0 && frame.size.height < 40.0;
+            BOOL bottom = frame.origin.y > screen.size.height * 0.55;
+            if (wide && thin && bottom) {
+                if (candidates.count < 4) [candidates addObject:name];
+                if ([name containsString:@"Progress"] &&
+                    (best == 0.0 || frame.origin.y < best)) {
+                    best = frame.origin.y;
+                }
             }
         }
 
         for (UIView *sub in view.subviews) [stack addObject:sub];
     }
+
+    gBottomCandidates = candidates.count > 0
+        ? [candidates.array componentsJoinedByString:@","]
+        : @"(none)";
     return best;
 }
 
@@ -958,12 +969,13 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {    if (!bar || gSyncing) retu
         CGRect barBounds = bar.bounds;
         NSUInteger mirrored = gItems.count > 0 ? gItems.count - 1 : 0;
         gDiagnostics = [NSString stringWithFormat:
-                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d 进度条=%.0f",
+                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d 进度条=%.0f\n底部候选=%@",
                         NSStringFromClass(bar.class), barBounds.size.width, barBounds.size.height,
                         bar.safeAreaInsets.bottom,
                         (unsigned long)mirrored, (unsigned long)buttons.count,
                         host == bar ? @"底栏" : NSStringFromClass(host.class),
-                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, gProgressTop];
+                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, gProgressTop,
+                        gBottomCandidates ?: @"(未扫描)"];
 
         // 几何只在第一次同步时打一行：底栏高度决定胶囊能有多高，这是移植时最先要确认的数。
         static BOOL loggedGeometry = NO;
