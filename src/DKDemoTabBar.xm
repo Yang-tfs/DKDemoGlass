@@ -885,12 +885,19 @@ static void DKDemoLayoutInView(UIView *host) {
     CGFloat lift = [host isKindOfClass:UIWindow.class] ? DKDemoLift() : 0.0;
     CGFloat y = MAX(bounds.size.height - bottomInset - margin - height - lift, 0.0);
 
-    // 窗口宿主：把胶囊收在进度条上方。进度条位置随页面/全屏变化，写死一定会错位。
+    // 窗口宿主：把胶囊放到进度条【下方】并尽量贴屏幕底（会盖住 home indicator 那一带）。
+    // 进度条位置随页面/全屏变化，写死一定错位，所以运行时探测；放不下才退回它上方。
     gProgressTop = 0.0;
     if ([host isKindOfClass:UIWindow.class]) {
         gProgressTop = DKDemoBottomProgressTop(host);
-        if (gProgressTop > height + 8.0) {
-            y = MIN(y, gProgressTop - height - 4.0);
+        if (gProgressTop > 0.0) {
+            CGFloat below = gProgressTop + 6.0;
+            CGFloat lowest = MAX(bounds.size.height - 4.0 - height, 0.0);
+            if (below + height <= bounds.size.height - 2.0) {
+                y = MAX(lowest, below);
+            } else {
+                y = MAX(gProgressTop - height - 6.0, 0.0);
+            }
         }
     }
 
