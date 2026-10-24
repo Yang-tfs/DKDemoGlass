@@ -35,6 +35,8 @@ static UIWindow *DKDemoKeyWindow(void);
 
 static NSString *const kDKDemoEnabledKey = @"DKDemoGlassEnabled";
 static NSString *const kDKDemoPresetKey  = @"DKDemoGlassPreset";
+/// 窗口宿主时，底栏从屏幕底部抬起的距离（pt）。0 = 贴底，会压住抖音的视频进度条。
+static NSString *const kDKDemoLiftKey    = @"DKDemoGlassLift";
 
 static const long long kDKDemoPlusButtonType = 2;
 
@@ -185,9 +187,14 @@ static DKDemoGlassPreset DKDemoPreset(void) {
     return (DKDemoGlassPreset)[defaults integerForKey:kDKDemoPresetKey];
 }
 
-static BOOL DKDemoOverlayPreferred(void) {
-    return gHostWindow;
+/// 窗口宿主时的抬升量。默认 16pt：刚好让出屏幕最下方那条视频进度条。
+static CGFloat DKDemoLift(void) {
+    id value = [NSUserDefaults.standardUserDefaults objectForKey:kDKDemoLiftKey];
+    return value ? [value doubleValue] : 16.0;
 }
+
+static BOOL DKDemoOverlayPreferred(void) {
+    return gHostWindow;}
 
 static NSString *DKDemoPresetName(DKDemoGlassPreset preset) {    switch (preset) {
         case DKDemoGlassPresetThin: return @"清透";
@@ -510,6 +517,17 @@ static NSString *DKDemoBuildScanReport(void) {
         [weakSelf showToast:(gHostWindow ? @"宿主：窗口" : @"宿主：底栏")];
     }]];
 
+    // 抬升量：窗口宿主时胶囊会压住抖音的视频进度条，这里按 0/16/32 循环。
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"抬升：%.0fpt（点此切换）", DKDemoLift()]
+                                            style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        CGFloat lift = DKDemoLift();
+        CGFloat next = lift >= 32.0 ? 0.0 : lift + 16.0;
+        [NSUserDefaults.standardUserDefaults setDouble:next forKey:kDKDemoLiftKey];
+        if (gBar) DKDemoSync(gBar);
+        [weakSelf showToast:[NSString stringWithFormat:@"抬升：%.0fpt", next]];
+    }]];
+
     [alert addAction:[UIAlertAction actionWithTitle:@"切换材质" style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
         NSInteger next = (DKDemoPreset() + 1) % 3;
@@ -627,8 +645,10 @@ static void DKDemoUpdateFloatButton(UIWindow *window) {
     if (gFloatButton.superview != window) [window addSubview:gFloatButton];
 
     CGFloat side = 40.0;
+    // 贴着胶囊上沿再留一点空隙：胶囊会随"抬升"移动，所以按抬升量一起上移。
+    CGFloat bottomGap = 150.0 + DKDemoLift();
     gFloatButton.frame = CGRectMake(window.bounds.size.width - side - 6.0,
-                                    window.bounds.size.height - 150.0, side, side);
+                                    window.bounds.size.height - bottomGap, side, side);
 
     // 弹窗（比如我们自己的菜单）在的时候不要抢到最上面，否则会盖住弹窗。
     if (!window.rootViewController.presentedViewController) {
@@ -820,7 +840,9 @@ static void DKDemoLayoutInView(UIView *host) {
     if (height < 36.0 && available > 0.0) height = MIN(available, 36.0);
     if (height <= 0.0) height = available > 0.0 ? available : kDKDemoCapsuleHeight;
 
-    CGFloat y = MAX(bounds.size.height - bottomInset - margin - height, 0.0);
+    // 挂窗口时整体抬高，给屏幕最下方的视频进度条让位；挂底栏时不抬，否则会顶出底栏。
+    CGFloat lift = [host isKindOfClass:UIWindow.class] ? DKDemoLift() : 0.0;
+    CGFloat y = MAX(bounds.size.height - bottomInset - margin - height - lift, 0.0);
 
     CGFloat plusSide = MIN(kDKDemoPlusKeySide, height);
     CGFloat plusX = bounds.size.width - kDKDemoEdgeInset - plusSide;
