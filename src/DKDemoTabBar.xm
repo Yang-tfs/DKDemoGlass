@@ -144,9 +144,18 @@ static BOOL gHostWindow = YES;
 }
 
 - (void)applyTint {
-    UIColor *base = self.tintColor ?: UIColor.labelColor;
-    self.iconView.tintColor = self.selected ? base : [base colorWithAlphaComponent:0.62];
-    self.titleLabel.textColor = self.selected ? base : [base colorWithAlphaComponent:0.62];
+    // 底栏浮在视频上，抖音又把 window 强制成浅色（导致 tintColor 是黑的），
+    // 所以内容色不能跟 tintColor 走——固定白色 + 轻阴影，深色浅色背景都读得出来。
+    UIColor *base = UIColor.whiteColor;
+    self.iconView.tintColor = self.selected ? base : [base colorWithAlphaComponent:0.68];
+    self.titleLabel.textColor = self.selected ? base : [base colorWithAlphaComponent:0.72];
+
+    for (UIView *view in @[ self.iconView, self.titleLabel ]) {
+        view.layer.shadowColor = UIColor.blackColor.CGColor;
+        view.layer.shadowOpacity = 0.45;
+        view.layer.shadowRadius = 2.0;
+        view.layer.shadowOffset = CGSizeMake(0.0, 1.0);
+    }
 }
 
 @end
@@ -706,17 +715,27 @@ static void DKDemoRebuild(AWENormalModeTabBar *bar, NSArray *buttons, NSString *
         }
     } else {
         // tag 存的是它在原生数组里的下标——拍摄按钮可能夹在中间，不能用自己的计数。
+        NSArray<NSString *> *fallbackTitles = DKDemoFallbackTitles();
+        NSArray<NSString *> *fallbackSymbols = DKDemoFallbackSymbols();
+        NSUInteger slot = 0;
         for (NSUInteger i = 0; i < gNativeButtons.count; i++) {
             id button = gNativeButtons[i];
             long long type = -1;
             if (DKDemoButtonType(button, &type) && type == kDKDemoPlusButtonType) continue;
             if (![button isKindOfClass:UIView.class]) continue;
 
+            // 标题读不到时按位置兜底：抖音这类按钮的 label 有时是懒建的，
+            // 没有兜底的话胶囊里就只剩图标，看不出是哪个 tab。
             NSString *title = DKDemoButtonTitle(button);
+            if (title.length == 0 && slot < fallbackTitles.count) title = fallbackTitles[slot];
+
             UIImage *icon = DKDemoButtonIcon(button);
+            if (!icon && slot < fallbackSymbols.count) icon = DKDemoSymbol(fallbackSymbols[slot]);
+
             DKDemoItemView *item = DKDemoMakeItem(title, icon, (NSInteger)i, DKDemoButtonSelected(button));
             [gCapsule.contentView addSubview:item];
             [gItems addObject:item];
+            slot++;
         }
     }
 

@@ -142,7 +142,10 @@
 
 - (void)applyStyle:(UIUserInterfaceStyle)style {
     self.lastStyle = style;
-    BOOL dark = (style == UIUserInterfaceStyleDark);
+    // 底栏浮在视频上，背景明暗随时在变；而且抖音把 window 钉成浅色，跟着外观走
+    // 会得到"白玻璃 + 黑字"，压在深色画面上整条都看不见。这里统一用深色玻璃 + 白内容。
+    BOOL dark = YES;
+    (void)style;
 
     UIBlurEffectStyle blurStyle = UIBlurEffectStyleSystemThinMaterial;
     UIColor *tint = nil;
@@ -154,28 +157,28 @@
         case DKDemoGlassPresetThin:
             // 清透：材质本身已经足够透，染色只用来压一点对比，重点放在亮边。
             blurStyle = UIBlurEffectStyleSystemUltraThinMaterial;
-            tint = dark ? [UIColor colorWithWhite:0.0 alpha:0.16] : [UIColor colorWithWhite:1.0 alpha:0.08];
-            borderTop = [UIColor colorWithWhite:1.0 alpha:dark ? 0.42 : 0.85];
-            borderBottom = [UIColor colorWithWhite:1.0 alpha:dark ? 0.05 : 0.16];
-            highlight = [UIColor colorWithWhite:1.0 alpha:dark ? 0.10 : 0.30];
+            tint = dark ? [UIColor colorWithWhite:0.0 alpha:0.26] : [UIColor colorWithWhite:1.0 alpha:0.08];
+            borderTop = [UIColor colorWithWhite:1.0 alpha:dark ? 0.52 : 0.85];
+            borderBottom = [UIColor colorWithWhite:1.0 alpha:dark ? 0.06 : 0.16];
+            highlight = [UIColor colorWithWhite:1.0 alpha:dark ? 0.12 : 0.30];
             break;
 
         case DKDemoGlassPresetChrome:
             // 厚雾：可读性优先，适合浅色内容 / 文字多的底栏。
             blurStyle = UIBlurEffectStyleSystemChromeMaterial;
-            tint = dark ? [UIColor colorWithWhite:0.02 alpha:0.38] : [UIColor colorWithWhite:1.0 alpha:0.22];
-            borderTop = [UIColor colorWithWhite:1.0 alpha:dark ? 0.30 : 0.75];
-            borderBottom = [UIColor colorWithWhite:1.0 alpha:dark ? 0.04 : 0.12];
-            highlight = [UIColor colorWithWhite:1.0 alpha:dark ? 0.08 : 0.24];
+            tint = dark ? [UIColor colorWithWhite:0.02 alpha:0.52] : [UIColor colorWithWhite:1.0 alpha:0.22];
+            borderTop = [UIColor colorWithWhite:1.0 alpha:dark ? 0.42 : 0.75];
+            borderBottom = [UIColor colorWithWhite:1.0 alpha:dark ? 0.05 : 0.12];
+            highlight = [UIColor colorWithWhite:1.0 alpha:dark ? 0.10 : 0.24];
             break;
 
         case DKDemoGlassPresetFrosted:
         default:
             blurStyle = UIBlurEffectStyleSystemThinMaterial;
-            tint = dark ? [UIColor colorWithWhite:0.0 alpha:0.26] : [UIColor colorWithWhite:1.0 alpha:0.14];
-            borderTop = [UIColor colorWithWhite:1.0 alpha:dark ? 0.36 : 0.80];
-            borderBottom = [UIColor colorWithWhite:1.0 alpha:dark ? 0.05 : 0.14];
-            highlight = [UIColor colorWithWhite:1.0 alpha:dark ? 0.09 : 0.26];
+            tint = dark ? [UIColor colorWithWhite:0.0 alpha:0.40] : [UIColor colorWithWhite:1.0 alpha:0.14];
+            borderTop = [UIColor colorWithWhite:1.0 alpha:dark ? 0.46 : 0.80];
+            borderBottom = [UIColor colorWithWhite:1.0 alpha:dark ? 0.06 : 0.14];
+            highlight = [UIColor colorWithWhite:1.0 alpha:dark ? 0.11 : 0.26];
             break;
     }
 
@@ -190,8 +193,8 @@
     _highlightLayer.colors = @[ (id)highlight.CGColor,
                                 (id)[highlight colorWithAlphaComponent:0.0].CGColor ];
 
-    // 内容色跟随外观：玻璃上的文字 / 图标用系统语义色，深浅两档都成立。
-    self.tintColor = dark ? UIColor.whiteColor : UIColor.blackColor;
+    // 内容一律白色，跟深色玻璃配套。
+    self.tintColor = UIColor.whiteColor;
 }
 
 - (void)setShadowVisible:(BOOL)visible {
