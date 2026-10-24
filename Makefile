@@ -25,6 +25,8 @@ DKDemoGlass_LOGOS_DEFAULT_GENERATOR = internal
 # TrollFools 把注入的 dylib 放在 App 包里的 Frameworks/ 下，用 @executable_path 引用。
 # 若注入后启动即闪退、日志报 "image not found"，把它改成 @executable_path/DKDemoGlass.dylib 重出一次。
 DKDemoGlass_INSTALL_NAME ?= @executable_path/Frameworks/DKDemoGlass.dylib
+# 直接写进链接参数：Linux runner 上没有 install_name_tool，只能靠链接期写死。
+DKDemoGlass_LDFLAGS = -Wl,-install_name,$(DKDemoGlass_INSTALL_NAME)
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

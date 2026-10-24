@@ -1,4 +1,4 @@
-﻿name: build DKDemoGlass
+name: build DKDemoGlass
 
 on:
   push:
@@ -6,22 +6,13 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    # macOS runner 在这台账号上两次都是"排队 15 分钟、零步骤被取消"，改走 Linux runner。
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Theos
-        run: |
-          set -e
-          brew install ldid xz dpkg || true
-          export THEOS="$RUNNER_TEMP/theos"
-          rm -rf "$THEOS"
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
-          # theos 浠撳簱鑷甫涓€涓┖鐨?sdks 鐩綍锛屽繀椤诲厛娓呮帀鎵嶈兘 clone 鐪熸鐨?SDK 浠撳簱
-          rm -rf "$THEOS/sdks"
-          git clone --depth 1 https://github.com/theos/sdks.git "$THEOS/sdks"
-          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
-          echo "$THEOS/bin" >> "$GITHUB_PATH"
+      - name: Setup Theos (Linux)
+        uses: Randomblock1/theos-action@v1
 
       - name: Build dylib
         run: make dylib
@@ -29,14 +20,24 @@ jobs:
       - name: Verify dylib
         run: |
           set -e
-          file packages/DKDemoGlass.dylib
-          echo "--- install name ---"
-          otool -D packages/DKDemoGlass.dylib
-          echo "--- linked libs ---"
-          otool -L packages/DKDemoGlass.dylib
-          if otool -L packages/DKDemoGlass.dylib | grep -qi substrate; then
-            echo "::warning::dylib 閾炬帴浜?substrate锛孴rollFools 鐜涓嬩細鍔犺浇澶辫触"
-          fi
+          ls -l packages/DKDemoGlass.dylib
+          echo "ldid: $(command -v ldid || echo '(none)')"
+          python3 - <<'PY'
+          import re
+          import struct
+
+          path = 'packages/DKDemoGlass.dylib'
+          data = open(path, 'rb').read()
+          magic, cputype, cpusub, filetype = struct.unpack_from('<IiiI', data, 0)
+          print('magic=0x%X cputype=0x%X filetype=%d size=%d'
+                % (magic, cputype, filetype, len(data)))
+          text = data.decode('latin-1')
+          match = re.search(r'@executable_path/[A-Za-z/]*DKDemoGlass\.dylib', text)
+          print('install name:', match.group(0) if match else '(not found)')
+          print('substrate linked:', 'substrate' in text)
+          if filetype != 6:
+              raise SystemExit('not a Mach-O dylib')
+          PY
 
       - uses: actions/upload-artifact@v4
         with:
