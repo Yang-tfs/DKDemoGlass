@@ -828,13 +828,18 @@ static void DKDemoReparent(UIView *host) {
 
 /// 在窗口里找底部那条视频进度条：类名含 Progress、宽度过半屏、很薄、位于屏幕下半部。
 /// 找到返回它的顶部 Y（窗口坐标），找不到返回 0。
+/// 用显式栈迭代而不是递归 block——后者会被 ARC 判成自引用（-Warc-retain-cycles）。
 static CGFloat DKDemoBottomProgressTop(UIView *root) {
     if (!root) return 0.0;
     CGRect screen = root.bounds;
-    __block CGFloat best = 0.0;
-    __block void (^walk)(UIView *, NSInteger);
-    walk = ^(UIView *view, NSInteger depth) {
-        if (depth > 12) return;
+    CGFloat best = 0.0;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
+    NSUInteger budget = 4000;
+
+    while (stack.count > 0 && budget-- > 0) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+
         NSString *name = NSStringFromClass(view.class);
         if (!view.hidden && view.alpha > 0.05 && [name containsString:@"Progress"]) {
             CGRect frame = [view convertRect:view.bounds toView:root];
@@ -844,9 +849,9 @@ static CGFloat DKDemoBottomProgressTop(UIView *root) {
                 if (best == 0.0 || frame.origin.y < best) best = frame.origin.y;
             }
         }
-        for (UIView *sub in view.subviews) walk(sub, depth + 1);
-    };
-    walk(root, 0);
+
+        for (UIView *sub in view.subviews) [stack addObject:sub];
+    }
     return best;
 }
 
