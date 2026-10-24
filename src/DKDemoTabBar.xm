@@ -68,8 +68,10 @@ static BOOL gHostWindow = YES;
 
 #pragma mark - 内容项
 
-/// 胶囊里的一项：图标在上、文字在下；无文字时只居中图标（拍摄圆键就复用这个）。
+/// 胶囊里的一项：有文字时只显示文字（iOS 26 悬浮栏的形态），选中项底下垫一枚深色内胶囊；
+/// 没有文字时只居中图标（右侧拍摄键复用同一个类）。
 @interface DKDemoItemView : UIControl
+@property (nonatomic, strong) UIView *selectionView;
 @property (nonatomic, strong) UIImageView *iconView;
 @property (nonatomic, strong) UILabel *titleLabel;
 - (void)applyTint;
@@ -81,16 +83,22 @@ static BOOL gHostWindow = YES;
     self = [super initWithFrame:frame];
     if (!self) return nil;
 
+    _selectionView = [[UIView alloc] initWithFrame:CGRectZero];
+    _selectionView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.58];
+    _selectionView.userInteractionEnabled = NO;
+    _selectionView.hidden = YES;
+    [self addSubview:_selectionView];
+
     _iconView = [[UIImageView alloc] initWithFrame:CGRectZero];
     _iconView.contentMode = UIViewContentModeScaleAspectFit;
     _iconView.userInteractionEnabled = NO;
     [self addSubview:_iconView];
 
     _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    _titleLabel.font = [UIFont systemFontOfSize:10.0 weight:UIFontWeightMedium];
+    _titleLabel.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightSemibold];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     _titleLabel.adjustsFontSizeToFitWidth = YES;
-    _titleLabel.minimumScaleFactor = 0.8;
+    _titleLabel.minimumScaleFactor = 0.75;
     _titleLabel.userInteractionEnabled = NO;
     [self addSubview:_titleLabel];
 
@@ -100,24 +108,27 @@ static BOOL gHostWindow = YES;
 - (void)layoutSubviews {
     [super layoutSubviews];
 
-    CGFloat width = self.bounds.size.width;
-    CGFloat height = self.bounds.size.height;
-    // 底栏内容区只有 49pt 时胶囊只有 45pt 高，图标 + 文字（24+3+12=39）刚好塞得下；
-    // 再矮就只留图标，避免文字被压扁。
-    BOOL showTitle = self.titleLabel.text.length > 0 && height >= 40.0 && width >= 44.0;
+    CGRect bounds = self.bounds;
+    BOOL textOnly = self.titleLabel.text.length > 0;
 
-    if (showTitle) {
-        CGFloat iconSide = 24.0;
-        CGFloat gap = 3.0;
-        CGFloat labelHeight = 12.0;
-        CGFloat total = iconSide + gap + labelHeight;
-        CGFloat top = MAX((height - total) * 0.5, 0.0);
-        self.iconView.frame = CGRectMake((width - iconSide) * 0.5, top, iconSide, iconSide);
-        self.titleLabel.frame = CGRectMake(0.0, top + iconSide + gap, width, labelHeight);
+    if (textOnly) {
+        // 选中态：内缩一圈的深色胶囊，跟参考图一致。
+        CGFloat padX = 2.0;
+        CGFloat padY = 6.0;
+        self.selectionView.frame = CGRectInset(bounds, padX, padY);
+        self.selectionView.layer.cornerRadius = MAX(CGRectGetHeight(self.selectionView.bounds) * 0.5, 0.0);
+        self.selectionView.layer.cornerCurve = kCACornerCurveContinuous;
+        self.selectionView.hidden = !self.isSelected;
+
+        self.iconView.hidden = YES;
+        self.iconView.frame = CGRectZero;
+        self.titleLabel.frame = bounds;
     } else {
-        CGFloat iconSide = MIN(28.0, MAX(MIN(width, height) - 8.0, 0.0));
-        self.iconView.frame = CGRectMake((width - iconSide) * 0.5, (height - iconSide) * 0.5,
-                                         iconSide, iconSide);
+        self.selectionView.hidden = YES;
+        self.iconView.hidden = NO;
+        CGFloat side = MIN(30.0, MAX(MIN(bounds.size.width, bounds.size.height) - 10.0, 0.0));
+        self.iconView.frame = CGRectMake((bounds.size.width - side) * 0.5,
+                                         (bounds.size.height - side) * 0.5, side, side);
         self.titleLabel.frame = CGRectZero;
     }
 }
@@ -125,6 +136,7 @@ static BOOL gHostWindow = YES;
 - (void)setSelected:(BOOL)selected {
     [super setSelected:selected];
     [self applyTint];
+    [self setNeedsLayout];
 }
 
 - (void)setHighlighted:(BOOL)highlighted {
@@ -148,7 +160,7 @@ static BOOL gHostWindow = YES;
     // 所以内容色不能跟 tintColor 走——固定白色 + 轻阴影，深色浅色背景都读得出来。
     UIColor *base = UIColor.whiteColor;
     self.iconView.tintColor = self.selected ? base : [base colorWithAlphaComponent:0.68];
-    self.titleLabel.textColor = self.selected ? base : [base colorWithAlphaComponent:0.72];
+    self.titleLabel.textColor = self.selected ? base : [base colorWithAlphaComponent:0.78];
 
     for (UIView *view in @[ self.iconView, self.titleLabel ]) {
         view.layer.shadowColor = UIColor.blackColor.CGColor;
@@ -739,9 +751,9 @@ static void DKDemoRebuild(AWENormalModeTabBar *bar, NSArray *buttons, NSString *
         }
     }
 
-    // 拍摄圆键：图标镜像原生，读不到就用相机占位。
-    UIImage *plusIcon = nil;
-    if (gPlusNativeButton) plusIcon = DKDemoButtonIcon(gPlusNativeButton);
+    // 拍摄圆键：参考图是圆角方形加号，优先用它；读不到再退回抖音自己的图标。
+    UIImage *plusIcon = DKDemoSymbol(@"plus.square");
+    if (!plusIcon && gPlusNativeButton) plusIcon = DKDemoButtonIcon(gPlusNativeButton);
     if (!plusIcon) plusIcon = DKDemoSymbol(@"camera.fill");
     DKDemoItemView *plusItem = DKDemoMakeItem(nil, plusIcon, -1, NO);
     [plusItem addTarget:DKDemoControlShared()
