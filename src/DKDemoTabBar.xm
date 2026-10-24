@@ -60,6 +60,7 @@ static __weak UIControl *gPlusNativeButton;
 static NSString *gSignature;
 static NSString *gDiagnostics;
 static NSString *gScanReport;
+static CGFloat gProgressTop;   // 本次布局探测到的进度条顶部 Y；0 = 没找到
 static BOOL gSyncing;
 static UIButton *gFloatButton;
 static BOOL gFloatButtonHidden;
@@ -825,6 +826,30 @@ static void DKDemoReparent(UIView *host) {
     }
 }
 
+/// 在窗口里找底部那条视频进度条：类名含 Progress、宽度过半屏、很薄、位于屏幕下半部。
+/// 找到返回它的顶部 Y（窗口坐标），找不到返回 0。
+static CGFloat DKDemoBottomProgressTop(UIView *root) {
+    if (!root) return 0.0;
+    CGRect screen = root.bounds;
+    __block CGFloat best = 0.0;
+    __block void (^walk)(UIView *, NSInteger);
+    walk = ^(UIView *view, NSInteger depth) {
+        if (depth > 12) return;
+        NSString *name = NSStringFromClass(view.class);
+        if (!view.hidden && view.alpha > 0.05 && [name containsString:@"Progress"]) {
+            CGRect frame = [view convertRect:view.bounds toView:root];
+            if (frame.size.width > screen.size.width * 0.5 &&
+                frame.size.height > 0.0 && frame.size.height < 40.0 &&
+                frame.origin.y > screen.size.height * 0.55) {
+                if (best == 0.0 || frame.origin.y < best) best = frame.origin.y;
+            }
+        }
+        for (UIView *sub in view.subviews) walk(sub, depth + 1);
+    };
+    walk(root, 0);
+    return best;
+}
+
 static void DKDemoLayoutInView(UIView *host) {
     if (!gCapsule || !gPlusKey || !host) return;
 
@@ -843,6 +868,15 @@ static void DKDemoLayoutInView(UIView *host) {
     // 挂窗口时整体抬高，给屏幕最下方的视频进度条让位；挂底栏时不抬，否则会顶出底栏。
     CGFloat lift = [host isKindOfClass:UIWindow.class] ? DKDemoLift() : 0.0;
     CGFloat y = MAX(bounds.size.height - bottomInset - margin - height - lift, 0.0);
+
+    // 窗口宿主：把胶囊收在进度条上方。进度条位置随页面/全屏变化，写死一定会错位。
+    gProgressTop = 0.0;
+    if ([host isKindOfClass:UIWindow.class]) {
+        gProgressTop = DKDemoBottomProgressTop(host);
+        if (gProgressTop > height + 8.0) {
+            y = MIN(y, gProgressTop - height - 4.0);
+        }
+    }
 
     CGFloat plusSide = MIN(kDKDemoPlusKeySide, height);
     CGFloat plusX = bounds.size.width - kDKDemoEdgeInset - plusSide;
@@ -919,12 +953,12 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {    if (!bar || gSyncing) retu
         CGRect barBounds = bar.bounds;
         NSUInteger mirrored = gItems.count > 0 ? gItems.count - 1 : 0;
         gDiagnostics = [NSString stringWithFormat:
-                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d",
+                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d 进度条=%.0f",
                         NSStringFromClass(bar.class), barBounds.size.width, barBounds.size.height,
                         bar.safeAreaInsets.bottom,
                         (unsigned long)mirrored, (unsigned long)buttons.count,
                         host == bar ? @"底栏" : NSStringFromClass(host.class),
-                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0];
+                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, gProgressTop];
 
         // 几何只在第一次同步时打一行：底栏高度决定胶囊能有多高，这是移植时最先要确认的数。
         static BOOL loggedGeometry = NO;
