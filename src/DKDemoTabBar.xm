@@ -64,6 +64,7 @@ static BOOL gSyncing;
 static UIButton *gFloatButton;
 static BOOL gFloatButtonHidden;
 static CGFloat gPanBaseGap = 34.0;   // 拖动开始时的距底值
+static CGFloat gLastGap = 36.0;      // 本次布局实际用的距底值（原位时也会填）
 /// 宿主：YES = 挂 window（默认），NO = 挂底栏。
 /// 只在本次运行内有效，不落盘——上一版把它存进 NSUserDefaults，误触一次就再也回不来，
 /// 重启 App 恢复窗口模式比让用户去菜单里找回来靠谱。
@@ -231,7 +232,7 @@ static CGFloat DKDemoGap(void) {
     BOOL gallery = DKDemoIsGalleryPage();
     NSString *key = gallery ? kDKDemoGapGalleryKey : kDKDemoGapVideoKey;
     id value = [defaults objectForKey:key];
-    return value ? [value doubleValue] : (gallery ? 20.0 : 18.0);
+    return value ? [value doubleValue] : 0.0;   // 0 = 原位（按底栏的位置摆）
 }
 
 static void DKDemoSetGap(CGFloat gap) {
@@ -546,7 +547,7 @@ static NSString *DKDemoBuildScanReport(void) {
     if (!view) return;
 
     if (gesture.state == UIGestureRecognizerStateBegan) {
-        gPanBaseGap = DKDemoGap();
+        gPanBaseGap = gLastGap;
     } else if (gesture.state == UIGestureRecognizerStateChanged) {
         CGPoint translation = [gesture translationInView:view.window ?: view];
         DKDemoSetGap(gPanBaseGap - translation.y);
@@ -583,16 +584,19 @@ static NSString *DKDemoBuildScanReport(void) {
         [weakSelf showToast:(gHostWindow ? @"宿主：窗口" : @"宿主：底栏")];
     }]];
 
-    // 位置：直接拖动底栏上下调；这里只提供复位（按当前内容类型复位）。
+    // 位置：默认按底栏原位摆放（原版策略）；拖动可微调，这里只提供复位。
     BOOL galleryNow = DKDemoIsGalleryPage();
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"位置：%@ 距底 %.0fpt（拖动可调）",
-                                                      galleryNow ? @"图文" : @"视频", DKDemoGap()]
+    CGFloat currentGap = DKDemoGap();
+    NSString *gapText = currentGap > 0.0
+        ? [NSString stringWithFormat:@"距底 %.0fpt", currentGap]
+        : @"底栏原位";
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"位置：%@ %@（拖动可调）",
+                                                      galleryNow ? @"图文" : @"视频", gapText]
                                             style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
-        DKDemoSetGap(galleryNow ? 20.0 : 18.0);
+        DKDemoSetGap(0.0);
         if (gBar) DKDemoSync(gBar);
-        [weakSelf showToast:[NSString stringWithFormat:@"%@ 位置复位：%.0fpt",
-                             galleryNow ? @"图文" : @"视频", galleryNow ? 20.0 : 18.0]];
+        [weakSelf showToast:@"位置已复位：底栏原位"];
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"切换材质" style:UIAlertActionStyleDefault
@@ -908,20 +912,24 @@ static void DKDemoLayoutInView(UIView *host) {
 
     CGRect bounds = host.bounds;
     CGFloat bottomInset = host.safeAreaInsets.bottom;
-
-    // 底栏的真实高度 = 内容区 + home indicator 安全区。iPhone 13 Pro Max 上典型是 49 + 34 = 83，
-    // 胶囊只能活在内容区里，所以高度跟着内容区走（约 45pt），不硬写 62——硬写会顶出底栏被裁。
-    CGFloat available = MAX(bounds.size.height - bottomInset, 0.0);
     CGFloat margin = 2.0;
-    CGFloat maxHeight = MAX(available - margin * 2.0, 0.0);
-    CGFloat height = MIN(kDKDemoCapsuleHeight, maxHeight);
-    if (height < 36.0 && available > 0.0) height = MIN(available, 36.0);
-    if (height <= 0.0) height = available > 0.0 ? available : kDKDemoCapsuleHeight;
 
-    // 位置由用户拖动决定（底边距屏幕底 = DKDemoGap）。挂底栏时贴着底栏内容区走。
+    // 原版策略：胶囊只占抖音底栏原本的内容区（总高 83 − 安全区 34 ≈ 49，胶囊取 45），
+    // 底栏位置不动，进度条自然落在它上方。不再往安全区之上浮。
+    CGFloat height = 45.0;
+    if (gBar && gBar.superview) {
+        CGFloat barHeight = CGRectGetHeight(gBar.frame);
+        if (barHeight > 40.0) height = MAX(barHeight - bottomInset - margin * 2.0, 36.0);
+    }
+    height = MIN(height, kDKDemoCapsuleHeight);
+
     CGFloat y;
     if ([host isKindOfClass:UIWindow.class]) {
-        y = MAX(bounds.size.height - DKDemoGap() - height, 0.0);
+        // 挂窗口时同样按「底栏原位」摆放；拖动过的值优先，0 表示用原位。
+        CGFloat gap = DKDemoGap();
+        if (gap <= 0.0) gap = bottomInset + margin;
+        gLastGap = gap;
+        y = MAX(bounds.size.height - gap - height, 0.0);
     } else {
         y = MAX(bounds.size.height - bottomInset - margin - height, 0.0);
     }
