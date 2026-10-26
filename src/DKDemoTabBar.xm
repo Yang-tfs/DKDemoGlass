@@ -907,6 +907,51 @@ static void DKDemoReparent(UIView *host) {
     }
 }
 
+/// 把抖音的进度条整体顶到胶囊上方：找 AWEFeedProgressSlider，把它的容器上移重叠量。
+/// 返回实际位移（0 = 没动）。容器太大时不动，避免把整层视频 HUD 一起挪走。
+static CGFloat gProgressShift = 0.0;
+
+static CGFloat DKDemoLiftProgress(CGFloat capsuleTop, CGRect screenBounds) {
+    UIWindow *window = DKDemoKeyWindow();
+    if (!window) return 0.0;
+
+    UIView *slider = nil;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
+    NSUInteger budget = 3000;
+    while (stack.count > 0 && budget-- > 0) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        NSString *name = NSStringFromClass(view.class);
+        if (!view.hidden && view.alpha > 0.05 && [name containsString:@"ProgressSlider"]) {
+            CGRect frame = [view convertRect:view.bounds toView:window];
+            if (frame.size.width > screenBounds.size.width * 0.4 &&
+                frame.size.height > 0.0 && frame.size.height < 40.0 &&
+                frame.origin.y > screenBounds.size.height * 0.5) {
+                slider = view;
+                break;
+            }
+        }
+        for (UIView *sub in view.subviews) [stack addObject:sub];
+    }
+    if (!slider) return 0.0;
+
+    UIView *container = slider.superview ?: slider;
+    CGRect current = [container convertRect:container.bounds toView:window];
+    if (current.size.height > 80.0) return 0.0;   // 太大，多半是整层 HUD
+
+    // convertRect 已含 transform，先反解出未位移的原始矩形，避免来回抖动。
+    CGRect base = CGRectApplyAffineTransform(current, CGAffineTransformInvert(container.transform));
+    CGFloat overlap = CGRectGetMaxY(base) - (capsuleTop - 4.0);
+    if (overlap <= 0.0) {
+        if (!CGAffineTransformIsIdentity(container.transform)) {
+            container.transform = CGAffineTransformIdentity;
+        }
+        return 0.0;
+    }
+    container.transform = CGAffineTransformMakeTranslation(0.0, -overlap);
+    return overlap;
+}
+
 static void DKDemoLayoutInView(UIView *host) {
     if (!gCapsule || !gPlusKey || !host) return;
 
@@ -914,20 +959,24 @@ static void DKDemoLayoutInView(UIView *host) {
     CGFloat bottomInset = host.safeAreaInsets.bottom;
     CGFloat margin = 2.0;
 
-    // 原版策略：胶囊只占抖音底栏原本的内容区（总高 83 − 安全区 34 ≈ 49，胶囊取 45），
-    // 底栏位置不动，进度条自然落在它上方。不再往安全区之上浮。
-    CGFloat height = 45.0;
+    CGRect barRect = CGRectZero;
     if (gBar && gBar.superview) {
-        CGFloat barHeight = CGRectGetHeight(gBar.frame);
-        if (barHeight > 40.0) height = MAX(barHeight - bottomInset - margin * 2.0, 36.0);
+        barRect = [gBar convertRect:gBar.bounds toView:host];
     }
-    height = MIN(height, kDKDemoCapsuleHeight);
+    BOOL windowHost = [host isKindOfClass:UIWindow.class];
+
+    // 参考图的形态：窗口宿主用完整 62pt 胶囊；挂底栏时才收进底栏内容区（约 45pt）。
+    CGFloat height = kDKDemoCapsuleHeight;
+    if (!windowHost && barRect.size.height > 40.0) {
+        height = MAX(barRect.size.height - bottomInset - margin * 2.0, 36.0);
+        height = MIN(height, kDKDemoCapsuleHeight);
+    }
 
     CGFloat y;
-    if ([host isKindOfClass:UIWindow.class]) {
-        // 挂窗口时同样按「底栏原位」摆放；拖动过的值优先，0 表示用原位。
+    if (windowHost) {
+        // 窗口宿主默认贴底（安全区上方 8pt），拖动过的值优先。
         CGFloat gap = DKDemoGap();
-        if (gap <= 0.0) gap = bottomInset + margin;
+        if (gap <= 0.0) gap = bottomInset + 8.0;
         gLastGap = gap;
         y = MAX(bounds.size.height - gap - height, 0.0);
     } else {
@@ -951,6 +1000,13 @@ static void DKDemoLayoutInView(UIView *host) {
         sub.frame = gPlusKey.bounds;
     }
     [gPlusKey setNeedsLayout];
+
+    // 窗口宿主：胶囊是完整 62pt，会盖住进度条，所以反过来把进度条顶上去。
+    if (windowHost) {
+        gProgressShift = DKDemoLiftProgress(y, bounds);
+    } else {
+        gProgressShift = 0.0;
+    }
 
     NSUInteger count = gItems.count;
     NSUInteger itemCount = count > 0 ? count - 1 : 0;   // 最后一个是圆键里的图标
@@ -1009,12 +1065,12 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {    if (!bar || gSyncing) retu
         CGRect barBounds = bar.bounds;
         NSUInteger mirrored = gItems.count > 0 ? gItems.count - 1 : 0;
         gDiagnostics = [NSString stringWithFormat:
-                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d 距底=%.0f\n内容=%@",
+                        @"底栏 %@ %.0f×%.0f 安全区=%.0f 镜像=%lu/%lu\n宿主=%@ 底栏hidden=%d alpha=%.2f window=%d 距底=%.0f 进度条上移=%.0f\n内容=%@",
                         NSStringFromClass(bar.class), barBounds.size.width, barBounds.size.height,
                         bar.safeAreaInsets.bottom,
                         (unsigned long)mirrored, (unsigned long)buttons.count,
                         host == bar ? @"底栏" : NSStringFromClass(host.class),
-                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, DKDemoGap(),
+                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, DKDemoGap(), gProgressShift,
                         DKDemoIsGalleryPage() ? @"图文" : @"视频"];
 
         // 几何只在第一次同步时打一行：底栏高度决定胶囊能有多高，这是移植时最先要确认的数。
