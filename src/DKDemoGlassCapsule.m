@@ -30,8 +30,6 @@
 @property (nonatomic, strong) CAShapeLayer *borderMask;
 @property (nonatomic, strong, readwrite) UIView *contentView;
 
-/// 上一次 applyStyle: 的外观，preset 变更时用它重刷。
-@property (nonatomic, assign) UIUserInterfaceStyle lastStyle;
 /// 上一次 applyStyle: 用到的档位，避免同一档反复重建材质（重建会打断过渡）。
 @property (nonatomic, assign) DKDemoGlassPreset appliedPreset;
 
@@ -47,7 +45,6 @@
 
     _preset = DKDemoGlassPresetFrosted;
     _appliedPreset = (DKDemoGlassPreset)-1;
-    _lastStyle = UIUserInterfaceStyleUnspecified;
 
     self.backgroundColor = UIColor.clearColor;
     self.layer.shadowColor = UIColor.blackColor.CGColor;
@@ -133,19 +130,18 @@
 }
 
 - (void)setPreset:(DKDemoGlassPreset)preset {
+    // 幂等：同一档重复赋值直接返回，避免打断系统正在做的材质过渡。
+    if (_preset == preset) return;
     _preset = preset;
-    UIUserInterfaceStyle style = self.lastStyle == UIUserInterfaceStyleUnspecified
-        ? UIUserInterfaceStyleLight
-        : self.lastStyle;
-    [self applyStyle:style];
+    [self applyStyle:UIUserInterfaceStyleUnspecified];
 }
 
 - (void)applyStyle:(UIUserInterfaceStyle)style {
-    self.lastStyle = style;
-    // 底栏浮在视频上，背景明暗随时在变；而且抖音把 window 钉成浅色，跟着外观走
-    // 会得到"白玻璃 + 黑字"，压在深色画面上整条都看不见。这里统一用深色玻璃 + 白内容。
-    BOOL dark = YES;
+    // 参数保留只为跟调用点共用一套签名。底栏浮在视频上，背景明暗随时在变；
+    // 而且抖音把 window 钉成浅色，跟着外观走会得到「白玻璃 + 黑字」，
+    // 压在深色画面上整条都看不见。所以这里统一用深色玻璃 + 白内容。
     (void)style;
+    BOOL dark = YES;
 
     UIBlurEffectStyle blurStyle = UIBlurEffectStyleSystemThinMaterial;
     UIColor *tint = nil;
@@ -199,19 +195,6 @@
 
 - (void)setShadowVisible:(BOOL)visible {
     self.layer.shadowOpacity = visible ? 0.28 : 0.0;
-}
-
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
-    [super traitCollectionDidChange:previousTraitCollection];
-    if (previousTraitCollection == nil) return;
-    if (@available(iOS 13.0, *)) {
-        if (![self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) {
-            return;
-        }
-    }
-    if (self.lastStyle != UIUserInterfaceStyleUnspecified) {
-        [self applyStyle:self.traitCollection.userInterfaceStyle];
-    }
 }
 
 @end

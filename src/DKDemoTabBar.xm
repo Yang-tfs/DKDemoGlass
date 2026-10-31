@@ -35,8 +35,6 @@ static UIWindow *DKDemoKeyWindow(void);
 
 static NSString *const kDKDemoEnabledKey = @"DKDemoGlassEnabled";
 static NSString *const kDKDemoPresetKey  = @"DKDemoGlassPreset";
-/// 窗口宿主时，底栏从屏幕底部抬起的距离（pt）。0 = 贴底，会压住抖音的视频进度条。
-static NSString *const kDKDemoGapKey     = @"DKDemoGlassGap";   // 旧版单一位移键，仅用于迁移参考
 
 static const long long kDKDemoPlusButtonType = 2;
 
@@ -69,6 +67,14 @@ static CGFloat gLastGap = 36.0;      // 本次布局实际用的距底值（原�
 /// 只在本次运行内有效，不落盘——上一版把它存进 NSUserDefaults，误触一次就再也回不来，
 /// 重启 App 恢复窗口模式比让用户去菜单里找回来靠谱。
 static BOOL gHostWindow = YES;
+
+/// 「隐藏 3 秒对比原生」的窗口期。这期间 sync 不能再把原生子视图藏回去，
+/// 否则 layoutSubviews 一触发，那 3 秒里两边都看不见，这个功能就等于没有。
+static NSTimeInterval gComparisonUntil = 0.0;
+
+static BOOL DKDemoComparing(void) {
+    return gComparisonUntil > [NSDate timeIntervalSinceReferenceDate];
+}
 
 #pragma mark - 内容项
 
@@ -221,7 +227,7 @@ static BOOL DKDemoIsGalleryPage(void) {
     static BOOL cached = NO;
     static NSTimeInterval cachedAt = 0.0;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (now - cachedAt < 0.5) return cached;
+    if (now - cachedAt < 1.5) return cached;
     cached = DKDemoScanGallery();
     cachedAt = now;
     return cached;
@@ -229,10 +235,19 @@ static BOOL DKDemoIsGalleryPage(void) {
 
 static CGFloat DKDemoGap(void) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    BOOL gallery = DKDemoIsGalleryPage();
-    NSString *key = gallery ? kDKDemoGapGalleryKey : kDKDemoGapVideoKey;
-    id value = [defaults objectForKey:key];
+    id video = [defaults objectForKey:kDKDemoGapVideoKey];
+    id gallery = [defaults objectForKey:kDKDemoGapGalleryKey];
+    // 两个键都没设过 → 结果必然是 0。先短路，免得为了选哪个键去遍历整棵视图树。
+    if (!video && !gallery) return 0.0;
+    id value = DKDemoIsGalleryPage() ? gallery : video;
     return value ? [value doubleValue] : 0.0;   // 0 = 原位（按底栏的位置摆）
+}
+
+/// 窗口宿主下实际生效的距底值。0 表示「默认贴底」，即安全区上方 8pt。
+static CGFloat DKDemoResolvedGap(UIView *host) {
+    CGFloat gap = DKDemoGap();
+    if (gap > 0.0) return gap;
+    return host.safeAreaInsets.bottom + 8.0;
 }
 
 static void DKDemoSetGap(CGFloat gap) {
@@ -241,10 +256,8 @@ static void DKDemoSetGap(CGFloat gap) {
     [NSUserDefaults.standardUserDefaults setDouble:MAX(0.0, MIN(gap, 200.0)) forKey:key];
 }
 
-static BOOL DKDemoOverlayPreferred(void) {
-    return gHostWindow;}
-
-static NSString *DKDemoPresetName(DKDemoGlassPreset preset) {    switch (preset) {
+static NSString *DKDemoPresetName(DKDemoGlassPreset preset) {
+    switch (preset) {
         case DKDemoGlassPresetThin: return @"清透";
         case DKDemoGlassPresetChrome: return @"厚雾";
         case DKDemoGlassPresetFrosted:
@@ -336,7 +349,8 @@ static NSArray *DKDemoNativeButtons(AWENormalModeTabBar *bar) {
     return candidates;
 }
 
-static NSString *DKDemoSignature(NSArray *buttons) {    NSMutableString *signature = [NSMutableString string];
+static NSString *DKDemoSignature(NSArray *buttons) {
+    NSMutableString *signature = [NSMutableString string];
     for (id button in buttons) {
         long long type = -1;
         DKDemoButtonType(button, &type);
@@ -587,16 +601,20 @@ static NSString *DKDemoBuildScanReport(void) {
     // 位置：默认按底栏原位摆放（原版策略）；拖动可微调，这里只提供复位。
     BOOL galleryNow = DKDemoIsGalleryPage();
     CGFloat currentGap = DKDemoGap();
-    NSString *gapText = currentGap > 0.0
-        ? [NSString stringWithFormat:@"距底 %.0fpt", currentGap]
-        : @"底栏原位";
+    NSString *gapText;
+    if (currentGap > 0.0) {
+        gapText = [NSString stringWithFormat:@"距底 %.0fpt", currentGap];
+    } else {
+        // 窗口宿主下 0 不是「原位」而是安全区上方 8pt；只有挂底栏时才是真原位。
+        gapText = gHostWindow ? @"默认贴底" : @"跟随底栏";
+    }
     [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"位置：%@ %@（拖动可调）",
                                                       galleryNow ? @"图文" : @"视频", gapText]
                                             style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
         DKDemoSetGap(0.0);
         if (gBar) DKDemoSync(gBar);
-        [weakSelf showToast:@"位置已复位：底栏原位"];
+        [weakSelf showToast:@"位置已复位"];
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"切换材质" style:UIAlertActionStyleDefault
@@ -622,6 +640,12 @@ static NSString *DKDemoBuildScanReport(void) {
     [alert addAction:[UIAlertAction actionWithTitle:(gFloatButtonHidden ? @"显示浮标" : @"隐藏浮标")
                                             style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
+        // 胶囊没建出来时（钩子没命中 / 类名变了），浮标是唯一的菜单入口。
+        // 这时候允许隐藏等于把自己锁在门外，直接拒绝。
+        if (!gFloatButtonHidden && !gCapsule) {
+            [weakSelf showToast:@"胶囊未建出，浮标是唯一入口，不能隐藏"];
+            return;
+        }
         gFloatButtonHidden = !gFloatButtonHidden;
         DKDemoUpdateFloatButton(DKDemoKeyWindow());
     }]];
@@ -641,11 +665,15 @@ static NSString *DKDemoBuildScanReport(void) {
     AWENormalModeTabBar *bar = gBar;
     if (!capsule) return;
 
+    // 先把窗口期立起来，再还原原生：否则 layoutSubviews 一触发，
+    // DKDemoSync 会立刻把原生重新藏回去，这 3 秒里两边都看不见。
+    gComparisonUntil = [NSDate timeIntervalSinceReferenceDate] + 3.0;
     capsule.hidden = YES;
     plusKey.hidden = YES;
     DKDemoRestoreNative(bar);
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        gComparisonUntil = 0.0;
         capsule.hidden = NO;
         plusKey.hidden = NO;
         if (bar) DKDemoSync(bar);
@@ -716,8 +744,10 @@ static void DKDemoUpdateFloatButton(UIWindow *window) {
     if (gFloatButton.superview != window) [window addSubview:gFloatButton];
 
     CGFloat side = 40.0;
-    // 浮标固定在胶囊上方 50pt，跟着底栏一起移动。
-    CGFloat bottomGap = DKDemoGap() + 62.0 + 50.0;
+    // 浮标固定在胶囊上方 50pt，跟着底栏一起移动。gLastGap 是上一次布局实际用的距底值，
+    // 底栏宿主时不会更新，退回到 42（安全区 34 + 8）也能落在合理位置。
+    CGFloat gap = gLastGap > 0.0 ? gLastGap : 42.0;
+    CGFloat bottomGap = gap + kDKDemoCapsuleHeight + 50.0;
     gFloatButton.frame = CGRectMake(window.bounds.size.width - side - 6.0,
                                     window.bounds.size.height - bottomGap, side, side);
 
@@ -779,7 +809,10 @@ static void DKDemoRefreshSelection(void) {
     }
 }
 
-static void DKDemoRebuild(AWENormalModeTabBar *bar, NSArray *buttons, NSString *signature) {
+/// 直接建到最终宿主上。以前是先 addSubview 到 bar 再 reparent——
+/// 而 rebuild 常常发生在 bar 自己的 layoutSubviews 里，等于在布局过程中改它的子树，
+/// 容易多触发一轮布局。现在窗口宿主下根本不动 bar 的子视图。
+static void DKDemoRebuild(UIView *host, NSArray *buttons, NSString *signature) {
     [gCapsule removeFromSuperview];
     [gPlusKey removeFromSuperview];
     gCapsule = nil;
@@ -799,12 +832,12 @@ static void DKDemoRebuild(AWENormalModeTabBar *bar, NSArray *buttons, NSString *
 
     gCapsule = [[DKDemoGlassCapsule alloc] initWithFrame:CGRectZero];
     gCapsule.preset = DKDemoPreset();
-    [bar addSubview:gCapsule];
+    [host addSubview:gCapsule];
 
     gPlusKey = [[DKDemoGlassCapsule alloc] initWithFrame:CGRectZero];
     gPlusKey.preset = DKDemoPreset();
     gPlusKey.capsuleCornerRadius = kDKDemoPlusKeySide * 0.5;
-    [bar addSubview:gPlusKey];
+    [host addSubview:gPlusKey];
 
     if (gNativeButtons.count == 0) {
         // 没读到原生按钮：只放占位项，材质和几何仍然可以评估。
@@ -880,7 +913,7 @@ static void DKDemoRebuild(AWENormalModeTabBar *bar, NSArray *buttons, NSString *
 
 /// 胶囊的宿主：默认挂 key window。挂底栏会被 DYYY 全屏 / 抖音换页一起带走。
 static UIView *DKDemoHost(AWENormalModeTabBar *bar) {
-    if (!DKDemoOverlayPreferred()) return bar;
+    if (!gHostWindow) return bar;
     // 优先 key window：那是浮标所在的窗口，已经证明它能盖在视频上面。
     UIWindow *window = DKDemoKeyWindow();
     if (!window) window = bar.window;
@@ -907,48 +940,120 @@ static void DKDemoReparent(UIView *host) {
     }
 }
 
-/// 把抖音的进度条整体顶到胶囊上方：找 AWEFeedProgressSlider，把它的容器上移重叠量。
-/// 返回实际位移（0 = 没动）。容器太大时不动，避免把整层视频 HUD 一起挪走。
+/// 把抖音的进度条整体顶到胶囊上方：找进度条容器，把它的位移改成「刚好在胶囊上面」。
+///
+/// 两个关键点：
+///  · 容器一旦定位就缓存下来（弱引用），后续布局直接复用，不再每帧遍历整棵视图树；
+///  · 位移必须可逆。任何一条不再需要避让的路径（切回底栏宿主、离开视频页、退场）
+///    都要把容器还原成它自己的 transform，否则进度条会永久悬在半空。
+static __weak UIView *gProgressContainer;
+static CGAffineTransform gProgressBaseTransform = CGAffineTransformIdentity;
 static CGFloat gProgressShift = 0.0;
+static Class gProgressSliderClass = Nil;
+static NSTimeInterval gProgressScanAt = 0.0;
 
-static CGFloat DKDemoLiftProgress(CGFloat capsuleTop, CGRect screenBounds) {
-    UIWindow *window = DKDemoKeyWindow();
-    if (!window) return 0.0;
+/// 把容器放回它自己的 transform，但保留缓存（下一次布局还能直接命中）。
+static void DKDemoClearProgressShift(void) {
+    UIView *container = gProgressContainer;
+    if (container && !CGAffineTransformEqualToTransform(container.transform, gProgressBaseTransform)) {
+        container.transform = gProgressBaseTransform;
+    }
+    gProgressShift = 0.0;
+}
 
-    UIView *slider = nil;
+/// 彻底忘掉：切宿主、退场、找不到进度条时用。
+static void DKDemoResetProgressShift(void) {
+    DKDemoClearProgressShift();
+    gProgressContainer = nil;
+    gProgressBaseTransform = CGAffineTransformIdentity;
+}
+
+static BOOL DKDemoIsProgressSlider(UIView *view, UIWindow *window, CGRect screenBounds) {
+    if (view.hidden || view.alpha <= 0.05) return NO;
+
+    // 类名匹配成功一次后就缓存 Class，后面全是 isKindOfClass:，
+    // 不用再为每个视图拼一遍 NSStringFromClass——那才是这条路径上最贵的一步。
+    BOOL matched = gProgressSliderClass
+        ? [view isKindOfClass:gProgressSliderClass]
+        : [NSStringFromClass(view.class) containsString:@"ProgressSlider"];
+    if (!matched) return NO;
+
+    CGRect frame = [view convertRect:view.bounds toView:window];
+    return frame.size.width > screenBounds.size.width * 0.4 &&
+           frame.size.height > 0.0 && frame.size.height < 40.0 &&
+           frame.origin.y > screenBounds.size.height * 0.5;
+}
+
+static UIView *DKDemoProgressContainer(UIWindow *window, CGRect screenBounds) {
+    UIView *cached = gProgressContainer;
+    if (cached && cached.window == window && !cached.hidden && cached.alpha > 0.05) return cached;
+
+    // 刚扫过没找到就别再扫：个人页这类没有进度条的页面会每帧调到这里。
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - gProgressScanAt < 0.5) return nil;
+    gProgressScanAt = now;
+
     NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
     NSUInteger budget = 3000;
+    UIView *slider = nil;
     while (stack.count > 0 && budget-- > 0) {
         UIView *view = stack.lastObject;
         [stack removeLastObject];
-        NSString *name = NSStringFromClass(view.class);
-        if (!view.hidden && view.alpha > 0.05 && [name containsString:@"ProgressSlider"]) {
-            CGRect frame = [view convertRect:view.bounds toView:window];
-            if (frame.size.width > screenBounds.size.width * 0.4 &&
-                frame.size.height > 0.0 && frame.size.height < 40.0 &&
-                frame.origin.y > screenBounds.size.height * 0.5) {
-                slider = view;
-                break;
-            }
+        if (DKDemoIsProgressSlider(view, window, screenBounds)) {
+            slider = view;
+            break;
         }
         for (UIView *sub in view.subviews) [stack addObject:sub];
     }
-    if (!slider) return 0.0;
+    if (!slider) {
+        // 缓存下来的类可能只覆盖信息流；换到直播等页面时进度条是另一个类。
+        // 清掉缓存，下一轮重新用类名扫，让它自愈。
+        gProgressSliderClass = Nil;
+        return nil;
+    }
+    if (!gProgressSliderClass) gProgressSliderClass = [slider class];
+    return slider.superview ?: slider;
+}
 
-    UIView *container = slider.superview ?: slider;
-    CGRect current = [container convertRect:container.bounds toView:window];
-    if (current.size.height > 80.0) return 0.0;   // 太大，多半是整层 HUD
-
-    // convertRect 已含 transform，先反解出未位移的原始矩形，避免来回抖动。
-    CGRect base = CGRectApplyAffineTransform(current, CGAffineTransformInvert(container.transform));
-    CGFloat overlap = CGRectGetMaxY(base) - (capsuleTop - 4.0);
-    if (overlap <= 0.0) {
-        if (!CGAffineTransformIsIdentity(container.transform)) {
-            container.transform = CGAffineTransformIdentity;
-        }
+static CGFloat DKDemoLiftProgress(CGFloat capsuleTop, CGRect screenBounds) {
+    UIWindow *window = DKDemoKeyWindow();
+    if (!window) {
+        DKDemoResetProgressShift();
         return 0.0;
     }
-    container.transform = CGAffineTransformMakeTranslation(0.0, -overlap);
+
+    UIView *container = DKDemoProgressContainer(window, screenBounds);
+    if (!container) {
+        DKDemoResetProgressShift();
+        return 0.0;
+    }
+
+    if (gProgressContainer != container) {
+        DKDemoResetProgressShift();
+        gProgressContainer = container;
+        gProgressBaseTransform = container.transform;
+    }
+
+    // 用「未位移的原始矩形」算重叠：先把 transform 换成基准再 convertRect，
+    // 否则读到的是上一次的位移，overlap 会逐帧累积，界面自己往上爬。
+    CGAffineTransform applied = container.transform;
+    container.transform = gProgressBaseTransform;
+    CGRect base = [container convertRect:container.bounds toView:window];
+    container.transform = applied;
+
+    if (base.size.height > 80.0) {   // 太大，多半是整层视频 HUD，不碰
+        DKDemoResetProgressShift();
+        return 0.0;
+    }
+
+    CGFloat overlap = CGRectGetMaxY(base) - (capsuleTop - 4.0);
+    if (overlap <= 0.0) {
+        DKDemoClearProgressShift();
+        return 0.0;
+    }
+
+    container.transform = CGAffineTransformTranslate(gProgressBaseTransform, 0.0, -overlap);
+    gProgressShift = overlap;
     return overlap;
 }
 
@@ -974,11 +1079,8 @@ static void DKDemoLayoutInView(UIView *host) {
 
     CGFloat y;
     if (windowHost) {
-        // 窗口宿主默认贴底（安全区上方 8pt），拖动过的值优先。
-        CGFloat gap = DKDemoGap();
-        if (gap <= 0.0) gap = bottomInset + 8.0;
-        gLastGap = gap;
-        y = MAX(bounds.size.height - gap - height, 0.0);
+        gLastGap = DKDemoResolvedGap(host);
+        y = MAX(bounds.size.height - gLastGap - height, 0.0);
     } else {
         y = MAX(bounds.size.height - bottomInset - margin - height, 0.0);
     }
@@ -1002,10 +1104,11 @@ static void DKDemoLayoutInView(UIView *host) {
     [gPlusKey setNeedsLayout];
 
     // 窗口宿主：胶囊是完整 62pt，会盖住进度条，所以反过来把进度条顶上去。
+    // 底栏宿主不需要避让——但必须把之前留下的位移还原，否则切过来进度条还悬着。
     if (windowHost) {
         gProgressShift = DKDemoLiftProgress(y, bounds);
     } else {
-        gProgressShift = 0.0;
+        DKDemoResetProgressShift();
     }
 
     NSUInteger count = gItems.count;
@@ -1025,6 +1128,9 @@ static void DKDemoTeardown(AWENormalModeTabBar *bar) {
     [gCapsule removeFromSuperview];
     [gPlusKey removeFromSuperview];
     [gFloatButton removeFromSuperview];
+    // 退场也要把进度条放回去，否则关掉插件后视频进度条永远多悬着一段。
+    DKDemoResetProgressShift();
+    gComparisonUntil = 0.0;
     gCapsule = nil;
     gPlusKey = nil;
     gItems = nil;
@@ -1033,7 +1139,8 @@ static void DKDemoTeardown(AWENormalModeTabBar *bar) {
     gSignature = nil;
 }
 
-static void DKDemoSync(AWENormalModeTabBar *bar) {    if (!bar || gSyncing) return;
+static void DKDemoSync(AWENormalModeTabBar *bar) {
+    if (!bar || gSyncing) return;
 
     gSyncing = YES;
     @try {
@@ -1044,23 +1151,33 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {    if (!bar || gSyncing) retu
             return;
         }
 
+        UIView *host = DKDemoHost(bar);
+
         NSArray *buttons = DKDemoNativeButtons(bar);
         NSString *signature = DKDemoSignature(buttons);
         if (!gCapsule || ![signature isEqualToString:gSignature ?: @""]) {
-            DKDemoRebuild(bar, buttons, signature);
+            DKDemoRebuild(host, buttons, signature);
         }
 
-        DKDemoHideNative(bar);
+        // 对比模式下不要又把原生藏回去，否则这 3 秒里胶囊和原生两边都看不见。
+        if (!DKDemoComparing()) DKDemoHideNative(bar);
 
-        UIView *host = DKDemoHost(bar);
         DKDemoReparent(host);
         DKDemoLayoutInView(host);
         DKDemoRefreshSelection();
 
+        // 材质档位是运行时可切的，不能只在 rebuild 时同步：
+        // 菜单里点「切换材质」不会改签名、不会触发 rebuild，只在这里赋值的话等于点了没反应。
+        DKDemoGlassPreset preset = DKDemoPreset();
+        gCapsule.preset = preset;   // setter 内部用 _appliedPreset 挡住重复重建材质
+        gPlusKey.preset = preset;
+
         UIUserInterfaceStyle style = DKDemoStyle(bar);
         [gCapsule applyStyle:style];
         [gPlusKey applyStyle:style];
-        DKDemoUpdateFloatButton(bar.window);
+
+        UIWindow *keyWindow = DKDemoKeyWindow();
+        DKDemoUpdateFloatButton(keyWindow ?: bar.window);
 
         CGRect barBounds = bar.bounds;
         NSUInteger mirrored = gItems.count > 0 ? gItems.count - 1 : 0;
@@ -1070,7 +1187,7 @@ static void DKDemoSync(AWENormalModeTabBar *bar) {    if (!bar || gSyncing) retu
                         bar.safeAreaInsets.bottom,
                         (unsigned long)mirrored, (unsigned long)buttons.count,
                         host == bar ? @"底栏" : NSStringFromClass(host.class),
-                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, DKDemoGap(), gProgressShift,
+                        bar.hidden ? 1 : 0, bar.alpha, bar.window ? 1 : 0, gLastGap, gProgressShift,
                         DKDemoIsGalleryPage() ? @"图文" : @"视频"];
 
         // 几何只在第一次同步时打一行：底栏高度决定胶囊能有多高，这是移植时最先要确认的数。
@@ -1089,6 +1206,8 @@ static void DKDemoUpdateOverlay(void) {
     if (!gBar || !gCapsule || !gPlusKey || gSyncing) return;
     UIView *host = DKDemoHost(gBar);
     if (!host) return;
+    // 抖音换页时会重挂背景层，这里补一次遮蔽，别等它下一次 layoutSubviews。
+    if (!DKDemoComparing()) DKDemoHideNative(gBar);
     DKDemoReparent(host);
     DKDemoLayoutInView(host);
 }
@@ -1121,9 +1240,11 @@ static void DKDemoUpdateOverlay(void) {
         DKDemoUpdateFloatButton(DKDemoKeyWindow());
     });
 
-    // 浮标兜底：底栏钩子没命中时（类名变了 / 页面还没建），这个是唯一能看到诊断的入口。
-    [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(__unused NSTimer *timer) {
+    // 用 common modes 注册：默认模式在滚动 / 拖动时会被停掉，
+    // 而这两种场景恰恰是最需要兜底布局的时候。
+    NSTimer *watchdog = [NSTimer timerWithTimeInterval:2.0 repeats:YES block:^(__unused NSTimer *timer) {
         DKDemoUpdateFloatButton(DKDemoKeyWindow());
         DKDemoUpdateOverlay();
     }];
+    [NSRunLoop.mainRunLoop addTimer:watchdog forMode:NSRunLoopCommonModes];
 }
